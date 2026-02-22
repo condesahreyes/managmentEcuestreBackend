@@ -9,6 +9,9 @@ import planesRoutes from './routes/planes.js';
 import suscripcionesRoutes from './routes/suscripciones.js';
 import horariosFijosRoutes from './routes/horarios-fijos.js';
 import adminRoutes from './routes/admin.js';
+import facturasRoutes from './routes/facturas.js';
+import comprobantesRoutes from './routes/comprobantes.js';
+import cronRoutes from './routes/cron.js';
 
 dotenv.config();
 
@@ -39,6 +42,9 @@ app.use('/api/planes', planesRoutes);
 app.use('/api/suscripciones', suscripcionesRoutes);
 app.use('/api/horarios-fijos', horariosFijosRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/facturas', facturasRoutes);
+app.use('/api/comprobantes', comprobantesRoutes);
+app.use('/api/cron', cronRoutes);
 
 // Error handler
 app.use((err, req, res, next) => {

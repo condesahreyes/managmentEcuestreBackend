@@ -119,4 +119,68 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Cambiar contraseña (requiere autenticación)
+router.post('/cambiar-password', async (req, res) => {
+  try {
+    const { password_actual, password_nueva } = req.body;
+
+    if (!password_actual || !password_nueva) {
+      return res.status(400).json({ error: 'Faltan campos requeridos' });
+    }
+
+    // Obtener usuario del token JWT
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ error: 'Token de acceso requerido' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(403).json({ error: 'Token inválido o expirado' });
+    }
+
+    // Buscar usuario
+    const { data: user, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('id', decoded.id)
+      .single();
+
+    if (userError || !user) {
+      return res.status(401).json({ error: 'Usuario no encontrado' });
+    }
+
+    // Verificar contraseña actual
+    const validPassword = await bcrypt.compare(password_actual, user.password_hash);
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Contraseña actual incorrecta' });
+    }
+
+    // Validar que la nueva contraseña tenga al menos 6 caracteres
+    if (password_nueva.length < 6) {
+      return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 6 caracteres' });
+    }
+
+    // Hash de nueva contraseña
+    const passwordHash = await bcrypt.hash(password_nueva, 10);
+
+    // Actualizar contraseña
+    const { error: updateError } = await supabaseAdmin
+      .from('users')
+      .update({ password_hash: passwordHash })
+      .eq('id', user.id);
+
+    if (updateError) throw updateError;
+
+    res.json({ mensaje: 'Contraseña actualizada exitosamente' });
+  } catch (error) {
+    console.error('Error al cambiar contraseña:', error);
+    res.status(500).json({ error: 'Error al cambiar contraseña' });
+  }
+});
+
 export default router;

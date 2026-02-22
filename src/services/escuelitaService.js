@@ -10,16 +10,17 @@ export class EscuelitaService {
    * @param {string} mes - Mes en formato YYYY-MM
    */
   static async generarClasesMensuales(userId, mes) {
-    // Obtener horario fijo del usuario
-    const { data: horarioFijo } = await supabaseAdmin
+    // Obtener todos los horarios fijos activos del usuario
+    const { data: horariosFijos, error: horariosError } = await supabaseAdmin
       .from('horarios_fijos')
-      .select('*, profesores(*)')
+      .select('*')
       .eq('user_id', userId)
       .eq('activo', true)
-      .single();
+      .order('dia_semana', { ascending: true })
+      .order('hora', { ascending: true });
 
-    if (!horarioFijo) {
-      return { exito: false, error: 'No tienes un horario fijo configurado' };
+    if (horariosError || !horariosFijos || horariosFijos.length === 0) {
+      return { exito: false, error: 'No tienes horarios fijos configurados' };
     }
 
     // Obtener suscripción activa
@@ -34,73 +35,83 @@ export class EscuelitaService {
       return { exito: false, error: 'No tienes una suscripción activa' };
     }
 
-    // Calcular cuántas clases debe tener (1 o 2 por semana)
+    // Calcular cuántas clases por semana
     const clasesPorSemana = suscripcion.clases_incluidas / 4; // Asumiendo 4 semanas
-    const diaSemana = horarioFijo.dia_semana;
 
-    // Obtener todas las fechas del mes que corresponden al día de la semana
-    const [año, mesNum] = mes.split('-').map(Number);
-    const fechas = this.obtenerFechasDelMes(año, mesNum, diaSemana);
-
-    // Limitar a las clases del plan
-    const fechasLimitadas = fechas.slice(0, suscripcion.clases_incluidas);
-
-    // Obtener un caballo disponible (tipo escuela)
-    const { data: caballos } = await supabaseAdmin
-      .from('caballos')
-      .select('id')
-      .eq('tipo', 'escuela')
-      .eq('estado', 'activo')
-      .eq('activo', true)
-      .limit(1);
-
-    if (!caballos || caballos.length === 0) {
-      return { exito: false, error: 'No hay caballos de escuela disponibles' };
+    if (horariosFijos.length !== clasesPorSemana) {
+      return { 
+        exito: false, 
+        error: `Debes tener ${clasesPorSemana} horario(s) fijo(s) configurado(s) para este plan` 
+      };
     }
 
-    const caballoId = caballos[0].id;
-
-    // Calcular hora fin (asumiendo 1 hora de duración)
-    const [hora, minuto] = horarioFijo.hora.split(':');
-    const horaFin = `${String(parseInt(hora) + 1).padStart(2, '0')}:${minuto}`;
-
-    // Crear clases
+    const [año, mesNum] = mes.split('-').map(Number);
     const clasesCreadas = [];
     const errores = [];
 
-    for (const fecha of fechasLimitadas) {
-      // Validar disponibilidad antes de crear
-      const { data: conflicto } = await supabaseAdmin
-        .from('clases')
-        .select('id')
-        .eq('profesor_id', horarioFijo.profesor_id)
-        .eq('fecha', fecha)
-        .eq('hora_inicio', horarioFijo.hora)
-        .eq('estado', 'programada');
-
-      if (conflicto && conflicto.length > 0) {
-        errores.push(`Conflicto en ${fecha}`);
+    // Generar clases para cada horario fijo
+    for (const horarioFijo of horariosFijos) {
+      if (!horarioFijo.caballo_id) {
+        errores.push(`No hay caballo asignado en el horario del ${this.getNombreDia(horarioFijo.dia_semana)}`);
         continue;
       }
 
-      const { data: clase, error } = await supabaseAdmin
-        .from('clases')
-        .insert({
-          user_id: userId,
-          profesor_id: horarioFijo.profesor_id,
-          caballo_id: caballoId,
-          fecha,
-          hora_inicio: horarioFijo.hora,
-          hora_fin: horaFin,
-          estado: 'programada'
-        })
-        .select()
-        .single();
+      // Obtener todas las fechas del mes que corresponden al día de la semana
+      const fechas = this.obtenerFechasDelMes(año, mesNum, horarioFijo.dia_semana);
 
-      if (error) {
-        errores.push(`Error al crear clase para ${fecha}: ${error.message}`);
-      } else {
-        clasesCreadas.push(clase);
+      // Calcular hora fin (asumiendo 1 hora de duración)
+      const [hora, minuto] = horarioFijo.hora.split(':');
+      const horaFin = `${String(parseInt(hora) + 1).padStart(2, '0')}:${minuto}`;
+
+      // Crear clases para este horario
+      for (const fecha of fechas) {
+        // Validar disponibilidad antes de crear
+        const { data: conflicto } = await supabaseAdmin
+          .from('clases')
+          .select('id')
+          .eq('profesor_id', horarioFijo.profesor_id)
+          .eq('fecha', fecha)
+          .eq('hora_inicio', horarioFijo.hora)
+          .eq('estado', 'programada');
+
+        if (conflicto && conflicto.length > 0) {
+          errores.push(`Conflicto en ${fecha} ${horarioFijo.hora}`);
+          continue;
+        }
+
+        // Validar conflicto con caballo
+        const { data: conflictoCaballo } = await supabaseAdmin
+          .from('clases')
+          .select('id')
+          .eq('caballo_id', horarioFijo.caballo_id)
+          .eq('fecha', fecha)
+          .eq('hora_inicio', horarioFijo.hora)
+          .eq('estado', 'programada');
+
+        if (conflictoCaballo && conflictoCaballo.length > 0) {
+          errores.push(`Conflicto de caballo en ${fecha} ${horarioFijo.hora}`);
+          continue;
+        }
+
+        const { data: clase, error } = await supabaseAdmin
+          .from('clases')
+          .insert({
+            user_id: userId,
+            profesor_id: horarioFijo.profesor_id,
+            caballo_id: horarioFijo.caballo_id,
+            fecha,
+            hora_inicio: horarioFijo.hora,
+            hora_fin: horaFin,
+            estado: 'programada'
+          })
+          .select()
+          .single();
+
+        if (error) {
+          errores.push(`Error al crear clase para ${fecha} ${horarioFijo.hora}: ${error.message}`);
+        } else {
+          clasesCreadas.push(clase);
+        }
       }
     }
 
@@ -117,6 +128,14 @@ export class EscuelitaService {
       clasesCreadas: clasesCreadas.length,
       errores
     };
+  }
+
+  /**
+   * Obtiene el nombre del día de la semana
+   */
+  static getNombreDia(diaSemana) {
+    const dias = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    return dias[diaSemana] || 'Día';
   }
 
   /**

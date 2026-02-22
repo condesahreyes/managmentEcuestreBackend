@@ -69,6 +69,7 @@ CREATE TABLE horarios_fijos (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   profesor_id UUID REFERENCES profesores(id),
+  caballo_id UUID REFERENCES caballos(id) ON DELETE SET NULL,
   dia_semana INTEGER NOT NULL CHECK (dia_semana BETWEEN 0 AND 6), -- 0 = Domingo, 6 = Sábado
   hora TIME NOT NULL,
   activo BOOLEAN DEFAULT true,

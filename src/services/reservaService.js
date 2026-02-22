@@ -146,6 +146,7 @@ export class ReservaService {
     let esExtra = false;
 
     // Verificar si excede el plan
+    // Escuelita ahora puede reservar libremente si tiene suscripción activa
     if (['escuelita', 'pension_completa'].includes(user.rol)) {
       const { data: suscripcion } = await supabaseAdmin
         .from('suscripciones')
@@ -157,6 +158,9 @@ export class ReservaService {
       if (suscripcion) {
         const clasesDisponibles = suscripcion.clases_incluidas - suscripcion.clases_usadas;
         esExtra = clasesDisponibles <= 0;
+      } else if (user.rol === 'escuelita') {
+        // Escuelita necesita suscripción activa para reservar
+        return { exito: false, error: 'Debes tener una suscripción activa para reservar clases' };
       }
     }
 

@@ -1,5 +1,6 @@
 import express from 'express';
 import { authenticateToken } from '../middleware/auth.js';
+import { validarUsuarioCompleto } from '../middleware/validarUsuario.js';
 import { ReservaService } from '../services/reservaService.js';
 import { EscuelitaService } from '../services/escuelitaService.js';
 import { supabaseAdmin } from '../config/supabase.js';
@@ -8,6 +9,8 @@ const router = express.Router();
 
 // Todas las rutas requieren autenticación
 router.use(authenticateToken);
+// Validar que usuarios de pensión/media pensión tengan caballo y suscripción
+router.use(validarUsuarioCompleto);
 
 // Obtener clases del usuario
 router.get('/mis-clases', async (req, res) => {

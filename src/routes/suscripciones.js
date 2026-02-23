@@ -1,12 +1,23 @@
 import express from 'express';
 import { authenticateToken } from '../middleware/auth.js';
+import { validarUsuarioCompleto } from '../middleware/validarUsuario.js';
 import { supabaseAdmin } from '../config/supabase.js';
+import { obtenerUltimoDiaDelMes } from '../utils/fechas.js';
 
 const router = express.Router();
 
-// Obtener suscripción activa del usuario
-router.get('/mi-suscripcion', authenticateToken, async (req, res) => {
+// Todas las rutas requieren autenticación
+router.use(authenticateToken);
+
+// Obtener suscripción activa del usuario (no requiere validación completa porque se usa para verificar estado)
+router.get('/mi-suscripcion', async (req, res) => {
   try {
+    const now = new Date()
+    const añoActual = now.getFullYear()
+    const mesActual = now.getMonth() + 1 // porque JS arranca en 0
+
+    const fechaBuscada = `${añoActual}-${String(mesActual).padStart(2, '0')}-01`
+
     const { data: suscripcion, error } = await supabaseAdmin
       .from('suscripciones')
       .select(`
@@ -14,13 +25,13 @@ router.get('/mi-suscripcion', authenticateToken, async (req, res) => {
         planes:plan_id(*)
       `)
       .eq('user_id', req.user.id)
-      .eq('activa', true)
-      .single();
+      .eq('fecha_inicio', fechaBuscada)
+      .maybeSingle();
 
     if (error && error.code !== 'PGRST116') {
       throw error;
     }
-
+    
     if (!suscripcion) {
       return res.json({ suscripcion: null, mensaje: 'No tienes una suscripción activa' });
     }
@@ -38,8 +49,8 @@ router.get('/mi-suscripcion', authenticateToken, async (req, res) => {
   }
 });
 
-// Obtener historial de suscripciones del usuario
-router.get('/historial', authenticateToken, async (req, res) => {
+// Obtener historial de suscripciones del usuario (no requiere validación completa)
+router.get('/historial', async (req, res) => {
   try {
     const { meses } = req.query;
     const mesesNum = meses ? parseInt(meses) : 3;
@@ -112,7 +123,8 @@ router.get('/historial', authenticateToken, async (req, res) => {
 });
 
 // Crear suscripción (ahora permite escuelita comprar sus propias suscripciones)
-router.post('/', authenticateToken, async (req, res) => {
+// No requiere validarUsuarioCompleto porque escuelita puede crear suscripciones
+router.post('/', async (req, res) => {
   try {
     const { plan_id, fecha_inicio, horarios } = req.body; // horarios es un array para escuelita
 
@@ -138,6 +150,214 @@ router.post('/', authenticateToken, async (req, res) => {
       });
     }
 
+    // Para escuelita, validar fechas especiales
+    if (req.user.rol === 'escuelita') {
+      const hoy = new Date();
+
+      let inicio;
+
+      if (fecha_inicio) {
+        const [year, month, day] = fecha_inicio.split('-').map(Number);
+        inicio = new Date(year, month - 1, day); // 👈 importante month - 1
+      } else {
+        inicio = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+      }
+
+      const añoActual = hoy.getFullYear();
+      const mesActual = hoy.getMonth();
+
+      const añoInicio = inicio.getFullYear();
+      const mesInicio = inicio.getMonth();
+
+      if (
+        añoInicio < añoActual ||
+        (añoInicio === añoActual && mesInicio < mesActual)
+      ) {
+        return res.status(400).json({
+          error: 'No puedes comprar cuponeras para meses anteriores al actual.',
+        });
+      }
+
+      // Validar que no exista una suscripción activa para el mismo mes
+      const fin = obtenerUltimoDiaDelMes(inicio);
+      const inicioStr = inicio.toISOString().split('T')[0];
+      const finStr = fin.toISOString().split('T')[0];
+
+      const { data: suscripcionesExistentes } = await supabaseAdmin
+        .from('suscripciones')
+        .select('id, fecha_inicio, fecha_fin')
+        .eq('user_id', req.user.id)
+        .eq('activa', true);
+
+      // Verificar si hay solapamiento de fechas
+      const haySolapamiento = suscripcionesExistentes?.some((susc) => {
+        const suscInicio = new Date(susc.fecha_inicio);
+        const suscFin = new Date(susc.fecha_fin);
+        // Hay solapamiento si: inicio está dentro del rango de la suscripción existente
+        // o fin está dentro del rango, o la suscripción existente está completamente dentro
+        return (
+          (inicio >= suscInicio && inicio <= suscFin) ||
+          (fin >= suscInicio && fin <= suscFin) ||
+          (inicio <= suscInicio && fin >= suscFin)
+        );
+      });
+
+      if (haySolapamiento) {
+        return res.status(400).json({
+          error: 'Ya tienes una cuponera activa para este mes. No puedes comprar dos cuponeras para el mismo mes.',
+        });
+      }
+
+      // Para escuelita, crear horarios fijos primero para calcular clases_incluidas
+      // Validar horarios
+      if (!horarios || !Array.isArray(horarios) || horarios.length === 0) {
+        return res.status(400).json({
+          error: 'Debes especificar al menos un horario fijo',
+        });
+      }
+
+      // Validar que la cantidad de horarios coincida con el plan
+      const clasesPorSemana = plan.clases_mes / 4;
+      if (horarios.length !== clasesPorSemana) {
+        return res.status(400).json({
+          error: `Este plan requiere ${clasesPorSemana} horario(s) fijo(s) por semana. Has proporcionado ${horarios.length}.`,
+        });
+      }
+
+      // Validar que cada horario tenga todos los campos
+      for (const horario of horarios) {
+        if (!horario.profesor_id || horario.dia_semana === undefined || !horario.hora || !horario.caballo_id) {
+          return res.status(400).json({
+            error: 'Cada horario debe tener: profesor, día de la semana, hora y caballo',
+          });
+        }
+      }
+
+      // Desactivar horarios fijos anteriores
+      await supabaseAdmin
+        .from('horarios_fijos')
+        .update({ activo: false })
+        .eq('user_id', req.user.id)
+        .eq('activo', true);
+
+      // Crear todos los horarios fijos temporalmente para calcular clases_incluidas
+      const horariosFijosCreados = [];
+      for (const horario of horarios) {
+        const { data: horarioFijo, error: horarioError } = await supabaseAdmin
+          .from('horarios_fijos')
+          .insert({
+            user_id: req.user.id,
+            profesor_id: horario.profesor_id,
+            dia_semana: parseInt(horario.dia_semana),
+            hora: horario.hora,
+            caballo_id: horario.caballo_id,
+            activo: true
+          })
+          .select()
+          .single();
+
+        if (horarioError) {
+          // Si falla algún horario, eliminar los horarios creados
+          await supabaseAdmin.from('horarios_fijos').delete().in('id', horariosFijosCreados.map(h => h.id));
+          throw horarioError;
+        }
+
+        horariosFijosCreados.push(horarioFijo);
+      }
+
+      // Calcular clases_incluidas basándose en los días reales del mes
+      const { EscuelitaService } = await import('../services/escuelitaService.js');
+      const año = inicio.getFullYear();
+      const mesNum = inicio.getMonth() + 1;
+      const clasesIncluidas = EscuelitaService.calcularClasesDelMes(horariosFijosCreados, año, mesNum);
+      
+      console.log(`[Suscripciones] Calculadas ${clasesIncluidas} clases para el mes ${año}-${mesNum}`);
+
+      // Si es el mes actual, calcular cuántas clases ya pasaron
+      let clasesUsadas = 0;
+      const esMesActual = inicio.getMonth() === hoy.getMonth() && inicio.getFullYear() === hoy.getFullYear();
+      
+      if (esMesActual) {
+        // Contar clases que ya pasaron (fecha < hoy) para los horarios fijos
+        for (const horarioFijo of horariosFijosCreados) {
+          const fechas = EscuelitaService.obtenerFechasDelMes(año, mesNum, horarioFijo.dia_semana);
+          const clasesPasadas = fechas.filter(fecha => fecha < hoy.toISOString().split('T')[0]);
+          clasesUsadas += clasesPasadas.length;
+        }
+        console.log(`[Suscripciones] Mes actual detectado. Clases ya pasadas: ${clasesUsadas}`);
+      }
+
+      // Crear nueva suscripción con el número correcto de clases
+      const { data: suscripcion, error } = await supabaseAdmin
+        .from('suscripciones')
+        .insert({
+          user_id: req.user.id,
+          plan_id: plan_id,
+          fecha_inicio: inicio.toISOString().split('T')[0],
+          fecha_fin: fin.toISOString().split('T')[0],
+          clases_incluidas: clasesIncluidas,
+          clases_usadas: clasesUsadas, // Si es mes actual, cuenta las clases ya pasadas
+          activa: true
+        })
+        .select(`
+          *,
+          planes:plan_id(*)
+        `)
+        .single();
+
+      if (error) {
+        // Si falla la suscripción, eliminar los horarios creados
+        await supabaseAdmin.from('horarios_fijos').delete().in('id', horariosFijosCreados.map(h => h.id));
+        throw error;
+      }
+
+      // Generar clases automáticamente para el mes
+      const mes = `${inicio.getFullYear()}-${String(inicio.getMonth() + 1).padStart(2, '0')}`;
+      const resultado = await EscuelitaService.generarClasesMensuales(req.user.id, mes);
+
+      const clasesGeneradas = resultado?.clasesCreadas || 0;
+      
+      if (!resultado.exito && clasesGeneradas === 0) {
+        console.warn('No se pudieron generar todas las clases:', resultado?.errores || resultado?.error);
+      }
+
+      // Crear factura automáticamente para la suscripción
+      const { FacturacionService } = await import('../services/facturacionService.js');
+      const añoNum = inicio.getFullYear();
+      const fechaVencimiento = FacturacionService.calcularDia10Habil(mesNum, añoNum);
+
+      const { data: factura, error: facturaError } = await supabaseAdmin
+        .from('facturas')
+        .insert({
+          user_id: req.user.id,
+          suscripcion_id: suscripcion.id,
+          mes: mesNum,
+          año: añoNum,
+          monto: plan.precio,
+          estado: 'pendiente',
+          fecha_vencimiento: fechaVencimiento,
+          pagada: false,
+        })
+        .select()
+        .single();
+
+      if (facturaError) {
+        console.error('Error al crear factura:', facturaError);
+        // No fallar la creación de suscripción si falla la factura, solo loguear
+      } else {
+        console.log(`[Suscripciones] Factura creada: ${factura.id} para mes ${mesNum}/${añoNum}`);
+      }
+
+      return res.status(201).json({
+        ...suscripcion,
+        horarios_fijos: horariosFijosCreados,
+        clases_generadas: clasesGeneradas,
+        factura: factura || null,
+        mensaje: `Suscripción creada y ${clasesGeneradas} clases generadas automáticamente. Factura pendiente de pago.`,
+      });
+    }
+
+    // Para otros roles (pensión completa, media pensión), comportamiento anterior
     // Desactivar suscripciones anteriores
     await supabaseAdmin
       .from('suscripciones')
@@ -169,85 +389,6 @@ router.post('/', authenticateToken, async (req, res) => {
       .single();
 
     if (error) throw error;
-
-    // Para escuelita, crear horarios fijos y generar clases automáticamente
-    if (req.user.rol === 'escuelita') {
-      // Validar horarios
-      if (!horarios || !Array.isArray(horarios) || horarios.length === 0) {
-        await supabaseAdmin.from('suscripciones').delete().eq('id', suscripcion.id);
-        return res.status(400).json({
-          error: 'Debes especificar al menos un horario fijo',
-        });
-      }
-
-      // Validar que la cantidad de horarios coincida con el plan
-      const clasesPorSemana = plan.clases_mes / 4;
-      if (horarios.length !== clasesPorSemana) {
-        await supabaseAdmin.from('suscripciones').delete().eq('id', suscripcion.id);
-        return res.status(400).json({
-          error: `Este plan requiere ${clasesPorSemana} horario(s) fijo(s) por semana. Has proporcionado ${horarios.length}.`,
-        });
-      }
-
-      // Validar que cada horario tenga todos los campos
-      for (const horario of horarios) {
-        if (!horario.profesor_id || horario.dia_semana === undefined || !horario.hora || !horario.caballo_id) {
-          await supabaseAdmin.from('suscripciones').delete().eq('id', suscripcion.id);
-          return res.status(400).json({
-            error: 'Cada horario debe tener: profesor, día de la semana, hora y caballo',
-          });
-        }
-      }
-
-      // Desactivar horarios fijos anteriores
-      await supabaseAdmin
-        .from('horarios_fijos')
-        .update({ activo: false })
-        .eq('user_id', req.user.id)
-        .eq('activo', true);
-
-      // Crear todos los horarios fijos
-      const horariosFijosCreados = [];
-      for (const horario of horarios) {
-        const { data: horarioFijo, error: horarioError } = await supabaseAdmin
-          .from('horarios_fijos')
-          .insert({
-            user_id: req.user.id,
-            profesor_id: horario.profesor_id,
-            dia_semana: parseInt(horario.dia_semana),
-            hora: horario.hora,
-            caballo_id: horario.caballo_id,
-            activo: true
-          })
-          .select()
-          .single();
-
-        if (horarioError) {
-          // Si falla algún horario, eliminar la suscripción y los horarios creados
-          await supabaseAdmin.from('suscripciones').delete().eq('id', suscripcion.id);
-          await supabaseAdmin.from('horarios_fijos').delete().in('id', horariosFijosCreados.map(h => h.id));
-          throw horarioError;
-        }
-
-        horariosFijosCreados.push(horarioFijo);
-      }
-
-      // Generar clases automáticamente para el mes
-      const mes = `${inicio.getFullYear()}-${String(inicio.getMonth() + 1).padStart(2, '0')}`;
-      const { EscuelitaService } = await import('../services/escuelitaService.js');
-      const resultado = await EscuelitaService.generarClasesMensuales(req.user.id, mes);
-
-      if (!resultado.exito && resultado.clasesCreadas === 0) {
-        console.warn('No se pudieron generar todas las clases:', resultado.errores);
-      }
-
-      return res.status(201).json({
-        ...suscripcion,
-        horarios_fijos: horariosFijosCreados,
-        clases_generadas: resultado.clasesCreadas,
-        mensaje: `Suscripción creada y ${resultado.clasesCreadas} clases generadas automáticamente`,
-      });
-    }
 
     res.status(201).json(suscripcion);
   } catch (error) {

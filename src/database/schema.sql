@@ -27,6 +27,19 @@ CREATE TABLE profesores (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Horarios de disponibilidad de profesores
+CREATE TABLE horarios_profesores (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  profesor_id UUID REFERENCES profesores(id) ON DELETE CASCADE,
+  dia_semana INTEGER NOT NULL CHECK (dia_semana BETWEEN 0 AND 6), -- 0 = Domingo, 6 = Sábado
+  hora_inicio TIME NOT NULL,
+  hora_fin TIME NOT NULL,
+  activo BOOLEAN DEFAULT true,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(profesor_id, dia_semana, hora_inicio, hora_fin)
+);
+
 -- Caballos
 CREATE TABLE caballos (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,3 +129,5 @@ CREATE INDEX idx_clases_caballo ON clases(caballo_id);
 CREATE INDEX idx_suscripciones_user ON suscripciones(user_id);
 CREATE INDEX idx_suscripciones_activa ON suscripciones(activa);
 CREATE INDEX idx_horarios_fijos_user ON horarios_fijos(user_id);
+CREATE INDEX idx_horarios_profesores_profesor ON horarios_profesores(profesor_id);
+CREATE INDEX idx_horarios_profesores_dia ON horarios_profesores(dia_semana);

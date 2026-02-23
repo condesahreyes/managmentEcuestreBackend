@@ -141,12 +141,15 @@ router.get('/ocupacion/profesores', requireRole('admin', 'profesor'), async (req
 // Obtener alumnos activos (solo admin)
 router.get('/alumnos', requireRole('admin'), async (req, res) => {
   try {
-    const { activo, rol } = req.query;
+    const { activo, rol, page, limit, search } = req.query;
+    const pageNum = page ? parseInt(page) : 1;
+    const limitNum = limit ? parseInt(limit) : 1000; // Por defecto sin límite para compatibilidad
+    const offset = (pageNum - 1) * limitNum;
 
-    // Primero obtener los usuarios
+    // Primero obtener los usuarios con conteo
     let query = supabaseAdmin
       .from('users')
-      .select('*')
+      .select('*', { count: page && limit ? 'exact' : undefined })
       .in('rol', ['escuelita', 'pension_completa', 'media_pension']);
 
     if (activo !== undefined) {
@@ -155,8 +158,18 @@ router.get('/alumnos', requireRole('admin'), async (req, res) => {
     if (rol) {
       query = query.eq('rol', rol);
     }
+    if (search) {
+      query = query.or(`nombre.ilike.%${search}%,apellido.ilike.%${search}%,email.ilike.%${search}%`);
+    }
 
-    const { data: usuarios, error: usuariosError } = await query;
+    // Si se solicita paginación, aplicarla
+    if (page && limit) {
+      query = query.range(offset, offset + limitNum - 1);
+    }
+
+    query = query.order('nombre', { ascending: true });
+
+    const { data: usuarios, error: usuariosError, count } = await query;
 
     if (usuariosError) throw usuariosError;
 
@@ -180,7 +193,21 @@ router.get('/alumnos', requireRole('admin'), async (req, res) => {
       })
     );
 
-    res.json(alumnosConSuscripciones);
+    // Si se solicitó paginación, devolver con estructura de paginación
+    if (page && limit) {
+      res.json({
+        alumnos: alumnosConSuscripciones,
+        paginacion: {
+          pagina: pageNum,
+          limite: limitNum,
+          total: count || 0,
+          totalPaginas: Math.ceil((count || 0) / limitNum),
+        },
+      });
+    } else {
+      // Compatibilidad con respuesta antigua
+      res.json(alumnosConSuscripciones);
+    }
   } catch (error) {
     console.error('Error al obtener alumnos:', error);
     res.status(500).json({ error: 'Error al obtener alumnos', details: error.message });
@@ -476,6 +503,38 @@ router.patch('/planes/:id', requireRole('admin'), async (req, res) => {
   }
 });
 
+router.delete('/planes/:id', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verificar si el plan tiene suscripciones activas
+    const { count } = await supabaseAdmin
+      .from('suscripciones')
+      .select('*', { count: 'exact', head: true })
+      .eq('plan_id', id)
+      .eq('activa', true);
+
+    if (count > 0) {
+      return res.status(400).json({
+        error: 'No se puede eliminar un plan con suscripciones activas',
+      });
+    }
+
+    // Eliminar el plan
+    const { error } = await supabaseAdmin
+      .from('planes')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+
+    res.json({ mensaje: 'Plan eliminado exitosamente' });
+  } catch (error) {
+    console.error('Error al eliminar plan:', error);
+    res.status(500).json({ error: 'Error al eliminar plan' });
+  }
+});
+
 // CRUD de Profesores (solo admin)
 router.get('/profesores', requireRole('admin'), async (req, res) => {
   try {
@@ -554,6 +613,27 @@ router.post('/profesores', requireRole('admin'), async (req, res) => {
       throw profesorError;
     }
 
+    // Crear horarios si se proporcionan
+    const { horarios } = req.body;
+    if (horarios && Array.isArray(horarios) && horarios.length > 0) {
+      const horariosData = horarios.map((horario) => ({
+        profesor_id: profesor.id,
+        dia_semana: horario.dia_semana,
+        hora_inicio: horario.hora_inicio,
+        hora_fin: horario.hora_fin,
+        activo: true,
+      }));
+
+      const { error: horariosError } = await supabaseAdmin
+        .from('horarios_profesores')
+        .insert(horariosData);
+
+      if (horariosError) {
+        console.error('Error al crear horarios:', horariosError);
+        // No fallamos la creación del profesor si fallan los horarios
+      }
+    }
+
     res.status(201).json({
       mensaje: `Profesor creado exitosamente. Contraseña por defecto: ${defaultPassword}`,
       profesor: {
@@ -571,7 +651,7 @@ router.post('/profesores', requireRole('admin'), async (req, res) => {
 router.patch('/profesores/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, apellido, telefono, activo } = req.body;
+    const { nombre, apellido, telefono, activo, horarios } = req.body;
 
     // Obtener el profesor para acceder al user_id
     const { data: profesor } = await supabaseAdmin
@@ -611,6 +691,35 @@ router.patch('/profesores/:id', requireRole('admin'), async (req, res) => {
         .eq('id', id);
 
       if (profesorError) throw profesorError;
+    }
+
+    // Actualizar horarios si se proporcionan
+    if (horarios !== undefined && Array.isArray(horarios)) {
+      // Desactivar horarios existentes
+      await supabaseAdmin
+        .from('horarios_profesores')
+        .update({ activo: false })
+        .eq('profesor_id', id);
+
+      // Crear nuevos horarios si hay alguno
+      if (horarios.length > 0) {
+        const horariosData = horarios.map((horario) => ({
+          profesor_id: id,
+          dia_semana: horario.dia_semana,
+          hora_inicio: horario.hora_inicio,
+          hora_fin: horario.hora_fin,
+          activo: true,
+        }));
+
+        const { error: horariosError } = await supabaseAdmin
+          .from('horarios_profesores')
+          .insert(horariosData);
+
+        if (horariosError) {
+          console.error('Error al actualizar horarios:', horariosError);
+          // No fallamos la actualización si fallan los horarios
+        }
+      }
     }
 
     // Obtener datos actualizados
@@ -709,6 +818,80 @@ router.post('/alumnos/:id/suscripcion', requireRole('admin'), async (req, res) =
   } catch (error) {
     console.error('Error al asignar suscripción:', error);
     res.status(500).json({ error: 'Error al asignar suscripción' });
+  }
+});
+
+// Obtener horarios de un profesor
+router.get('/profesores/:id/horarios', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { data, error } = await supabaseAdmin
+      .from('horarios_profesores')
+      .select('*')
+      .eq('profesor_id', id)
+      .eq('activo', true)
+      .order('dia_semana', { ascending: true })
+      .order('hora_inicio', { ascending: true });
+
+    if (error) throw error;
+
+    res.json(data || []);
+  } catch (error) {
+    console.error('Error al obtener horarios del profesor:', error);
+    res.status(500).json({ error: 'Error al obtener horarios del profesor' });
+  }
+});
+
+// Crear/Actualizar horarios de un profesor
+router.post('/profesores/:id/horarios', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { horarios } = req.body; // Array de horarios
+
+    if (!horarios || !Array.isArray(horarios)) {
+      return res.status(400).json({ error: 'Se requiere un array de horarios' });
+    }
+
+    // Validar que el profesor existe
+    const { data: profesor } = await supabaseAdmin
+      .from('profesores')
+      .select('id')
+      .eq('id', id)
+      .single();
+
+    if (!profesor) {
+      return res.status(404).json({ error: 'Profesor no encontrado' });
+    }
+
+    // Desactivar horarios existentes
+    await supabaseAdmin
+      .from('horarios_profesores')
+      .update({ activo: false })
+      .eq('profesor_id', id);
+
+    // Crear nuevos horarios
+    const horariosData = horarios.map((horario) => ({
+      profesor_id: id,
+      dia_semana: horario.dia_semana,
+      hora_inicio: horario.hora_inicio,
+      hora_fin: horario.hora_fin,
+      activo: true,
+    }));
+
+    const { data: nuevosHorarios, error: horariosError } = await supabaseAdmin
+      .from('horarios_profesores')
+      .insert(horariosData)
+      .select();
+
+    if (horariosError) throw horariosError;
+
+    res.json({
+      mensaje: 'Horarios actualizados exitosamente',
+      horarios: nuevosHorarios,
+    });
+  } catch (error) {
+    console.error('Error al actualizar horarios del profesor:', error);
+    res.status(500).json({ error: 'Error al actualizar horarios del profesor' });
   }
 });
 

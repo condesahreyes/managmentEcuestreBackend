@@ -3,6 +3,7 @@ import multer from 'multer';
 import { authenticateToken, requireRole } from '../middleware/auth.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { FacturacionService } from '../services/facturacionService.js';
+import { asegurarBucketExiste, obtenerUrlPublica } from '../utils/storage.js';
 
 const router = express.Router();
 
@@ -55,10 +56,21 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       // Permitir pero marcar como vencida
     }
 
+    // Asegurar que el bucket existe
+    try {
+      await asegurarBucketExiste('comprobantes');
+    } catch (bucketError) {
+      console.error('Error al verificar/crear bucket:', bucketError);
+      return res.status(500).json({ 
+        error: 'Error al configurar el almacenamiento. Contacta al administrador.',
+        details: bucketError.message 
+      });
+    }
+
     // Subir archivo a Supabase Storage
     const fileExt = req.file.originalname.split('.').pop();
     const fileName = `${req.user.id}/${factura_id}/${Date.now()}.${fileExt}`;
-    const filePath = `comprobantes/${fileName}`;
+    const filePath = fileName; // No incluir el nombre del bucket en el path
 
     const { data: uploadData, error: uploadError } = await supabaseAdmin.storage
       .from('comprobantes')
@@ -69,13 +81,16 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
 
     if (uploadError) {
       console.error('Error al subir archivo:', uploadError);
-      return res.status(500).json({ error: 'Error al subir el archivo' });
+      return res.status(500).json({ 
+        error: 'Error al subir el archivo',
+        details: uploadError.message 
+      });
     }
 
-    // Obtener URL pública del archivo
-    const { data: urlData } = supabaseAdmin.storage
-      .from('comprobantes')
-      .getPublicUrl(filePath);
+    // Guardar el path relativo en la base de datos (sin URL firmada todavía)
+    // La URL firmada se generará cuando se necesite ver el archivo
+    // Guardamos solo el path relativo: user_id/factura_id/timestamp.ext
+    const archivoUrl = filePath;
 
     // Crear registro de comprobante
     const { data: comprobante, error: comprobanteError } = await supabaseAdmin
@@ -83,7 +98,7 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
       .insert({
         factura_id,
         user_id: req.user.id,
-        archivo_url: urlData.publicUrl,
+        archivo_url: archivoUrl,
         nombre_archivo: req.file.originalname,
         tipo_archivo: req.file.mimetype,
         monto: parseFloat(monto),
@@ -94,7 +109,11 @@ router.post('/subir', authenticateToken, upload.single('archivo'), async (req, r
 
     if (comprobanteError) {
       // Si falla, eliminar archivo subido
-      await supabaseAdmin.storage.from('comprobantes').remove([filePath]);
+      try {
+        await supabaseAdmin.storage.from('comprobantes').remove([filePath]);
+      } catch (removeError) {
+        console.error('Error al eliminar archivo después de fallo:', removeError);
+      }
       throw comprobanteError;
     }
 
@@ -127,17 +146,39 @@ router.get('/mis-comprobantes', authenticateToken, async (req, res) => {
 
     if (error) throw error;
 
-    res.json(data || []);
+    // Generar URLs firmadas para los archivos
+    const comprobantesConUrls = await Promise.all(
+      (data || []).map(async (comprobante) => {
+        try {
+          // Si el archivo_url es una ruta relativa (no es una URL completa), generar URL firmada
+          if (comprobante.archivo_url && !comprobante.archivo_url.startsWith('http')) {
+            const signedUrl = await obtenerUrlPublica('comprobantes', comprobante.archivo_url);
+            return { ...comprobante, archivo_url: signedUrl || comprobante.archivo_url };
+          }
+          return comprobante;
+        } catch (urlError) {
+          console.error('Error al generar URL para comprobante:', urlError);
+          return comprobante;
+        }
+      })
+    );
+
+    res.json(comprobantesConUrls);
   } catch (error) {
     console.error('Error al obtener comprobantes:', error);
     res.status(500).json({ error: 'Error al obtener comprobantes' });
   }
 });
 
-// Obtener todos los comprobantes pendientes (admin)
-router.get('/pendientes', requireRole('admin'), async (req, res) => {
+// Obtener todos los comprobantes pendientes (admin) con paginación
+router.get('/pendientes', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
+    const { page = 1, limit = 20, estado = 'pendiente' } = req.query;
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const offset = (pageNum - 1) * limitNum;
+
+    let query = supabaseAdmin
       .from('comprobantes')
       .select(`
         *,
@@ -148,13 +189,46 @@ router.get('/pendientes', requireRole('admin'), async (req, res) => {
           monto,
           fecha_vencimiento
         )
-      `)
-      .eq('estado', 'pendiente')
-      .order('fecha_subida', { ascending: true });
+      `, { count: 'exact' });
+
+    if (estado !== 'todos') {
+      query = query.eq('estado', estado);
+    }
+
+    query = query
+      .order('fecha_subida', { ascending: true })
+      .range(offset, offset + limitNum - 1);
+
+    const { data, error, count } = await query;
 
     if (error) throw error;
 
-    res.json(data || []);
+    // Generar URLs firmadas para los archivos
+    const comprobantesConUrls = await Promise.all(
+      (data || []).map(async (comprobante) => {
+        try {
+          // Si el archivo_url es una ruta relativa, generar URL firmada
+          if (comprobante.archivo_url && !comprobante.archivo_url.startsWith('http')) {
+            const signedUrl = await obtenerUrlPublica('comprobantes', comprobante.archivo_url);
+            return { ...comprobante, archivo_url: signedUrl || comprobante.archivo_url };
+          }
+          return comprobante;
+        } catch (urlError) {
+          console.error('Error al generar URL para comprobante:', urlError);
+          return comprobante;
+        }
+      })
+    );
+
+    res.json({
+      comprobantes: comprobantesConUrls,
+      paginacion: {
+        pagina: pageNum,
+        limite: limitNum,
+        total: count || 0,
+        totalPaginas: Math.ceil((count || 0) / limitNum),
+      },
+    });
   } catch (error) {
     console.error('Error al obtener comprobantes pendientes:', error);
     res.status(500).json({ error: 'Error al obtener comprobantes pendientes' });
@@ -162,7 +236,7 @@ router.get('/pendientes', requireRole('admin'), async (req, res) => {
 });
 
 // Aprobar comprobante (admin)
-router.post('/:id/aprobar', requireRole('admin'), async (req, res) => {
+router.post('/:id/aprobar', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -205,7 +279,7 @@ router.post('/:id/aprobar', requireRole('admin'), async (req, res) => {
 });
 
 // Rechazar comprobante (admin)
-router.post('/:id/rechazar', requireRole('admin'), async (req, res) => {
+router.post('/:id/rechazar', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const { observaciones } = req.body;

@@ -16,6 +16,17 @@ router.get('/mis-facturas', authenticateToken, async (req, res) => {
   }
 });
 
+// Alias para obtener facturas pendientes
+router.get('/pendientes', authenticateToken, async (req, res) => {
+  try {
+    const facturas = await FacturacionService.obtenerFacturasPendientes(req.user.id);
+    res.json(facturas);
+  } catch (error) {
+    console.error('Error al obtener facturas pendientes:', error);
+    res.status(500).json({ error: 'Error al obtener facturas pendientes' });
+  }
+});
+
 // Obtener historial de facturas del usuario (últimos 3 meses)
 router.get('/historial', authenticateToken, async (req, res) => {
   try {
@@ -30,7 +41,7 @@ router.get('/historial', authenticateToken, async (req, res) => {
 });
 
 // Generar facturas mensuales (solo admin, se puede ejecutar manualmente o por cron)
-router.post('/generar-mensuales', requireRole('admin'), async (req, res) => {
+router.post('/generar-mensuales', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const resultado = await FacturacionService.generarFacturasMensuales();
     res.json({
@@ -45,7 +56,7 @@ router.post('/generar-mensuales', requireRole('admin'), async (req, res) => {
 });
 
 // Obtener todas las facturas (admin)
-router.get('/', requireRole('admin'), async (req, res) => {
+router.get('/', authenticateToken, requireRole('admin'), async (req, res) => {
   try {
     const { estado, mes, año } = req.query;
 

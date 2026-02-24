@@ -1,6 +1,5 @@
 import express from 'express';
 import { authenticateToken } from '../middleware/auth.js';
-import { validarUsuarioCompleto } from '../middleware/validarUsuario.js';
 import { supabaseAdmin } from '../config/supabase.js';
 import { obtenerUltimoDiaDelMes } from '../utils/fechas.js';
 
@@ -14,35 +13,62 @@ router.get('/mi-suscripcion', async (req, res) => {
   try {
     const now = new Date()
     const añoActual = now.getFullYear()
-    const mesActual = now.getMonth() + 1 // porque JS arranca en 0
+    const mesActual = now.getMonth() + 1
 
-    const fechaBuscada = `${añoActual}-${String(mesActual).padStart(2, '0')}-01`
-
-    const { data: suscripcion, error } = await supabaseAdmin
+    // Para escuelita, buscar por fecha_inicio del mes
+    // Para pensión/media pensión, buscar suscripción activa indefinida
+    let query = supabaseAdmin
       .from('suscripciones')
       .select(`
         *,
-        planes:plan_id(*)
+        planes:plan_id(*),
+        users:user_id(rol)
       `)
       .eq('user_id', req.user.id)
-      .eq('fecha_inicio', fechaBuscada)
-      .maybeSingle();
+      .eq('activa', true);
+
+    if (req.user.rol === 'escuelita') {
+      const fechaBuscada = `${añoActual}-${String(mesActual).padStart(2, '0')}-01`;
+      query = query.eq('fecha_inicio', fechaBuscada);
+    } else {
+      // Para pensión/media pensión, buscar suscripción indefinida
+      query = query.is('fecha_fin', null);
+    }
+
+    const { data: suscripcion, error } = await query.maybeSingle();
 
     if (error && error.code !== 'PGRST116') {
       throw error;
     }
-    
+
     if (!suscripcion) {
       return res.json({ suscripcion: null, mensaje: 'No tienes una suscripción activa' });
     }
 
-    // Calcular clases disponibles
-    const clasesDisponibles = suscripcion.clases_incluidas - suscripcion.clases_usadas;
-
-    res.json({
-      ...suscripcion,
-      clases_disponibles: clasesDisponibles
-    });
+    // Calcular clases disponibles según el tipo de usuario
+    let clasesDisponibles;
+    if (['pension_completa', 'media_pension'].includes(req.user.rol)) {
+      // Para pensión/media pensión, usar clases del mes actual
+      const { ClasesMensualesService } = await import('../services/clasesMensualesService.js');
+      const clasesMes = await ClasesMensualesService.obtenerClasesDisponibles(suscripcion.id, mesActual, añoActual);
+      clasesDisponibles = clasesMes.clasesDisponibles;
+      
+      res.json({
+        ...suscripcion,
+        clases_disponibles: clasesDisponibles,
+        clases_incluidas: clasesMes.clasesIncluidas,
+        clases_usadas: clasesMes.clasesUsadas,
+        mes_actual: mesActual,
+        año_actual: añoActual,
+      });
+    } else {
+      // Para escuelita, usar clases totales
+      clasesDisponibles = suscripcion.clases_incluidas - suscripcion.clases_usadas;
+      res.json({
+        ...suscripcion,
+        clases_disponibles: clasesDisponibles
+      });
+    }
   } catch (error) {
     console.error('Error al obtener suscripción:', error);
     res.status(500).json({ error: 'Error al obtener suscripción' });
@@ -123,7 +149,6 @@ router.get('/historial', async (req, res) => {
 });
 
 // Crear suscripción (ahora permite escuelita comprar sus propias suscripciones)
-// No requiere validarUsuarioCompleto porque escuelita puede crear suscripciones
 router.post('/', async (req, res) => {
   try {
     const { plan_id, fecha_inicio, horarios } = req.body; // horarios es un array para escuelita

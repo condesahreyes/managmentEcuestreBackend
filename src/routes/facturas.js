@@ -45,8 +45,9 @@ router.post('/generar-mensuales', authenticateToken, requireRole('admin'), async
   try {
     const resultado = await FacturacionService.generarFacturasMensuales();
     res.json({
-      mensaje: `Se generaron ${resultado.facturasCreadas} facturas`,
+      mensaje: `Se generaron ${resultado.facturasCreadas} facturas de ${resultado.totalSuscripciones} suscripciones indefinidas`,
       facturasCreadas: resultado.facturasCreadas,
+      totalSuscripciones: resultado.totalSuscripciones,
       errores: resultado.errores,
     });
   } catch (error) {

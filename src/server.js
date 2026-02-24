@@ -12,6 +12,7 @@ import adminRoutes from './routes/admin.js';
 import facturasRoutes from './routes/facturas.js';
 import comprobantesRoutes from './routes/comprobantes.js';
 import cronRoutes from './routes/cron.js';
+import pagosProfesoresRoutes from './routes/pagos-profesores.js';
 
 dotenv.config();
 
@@ -45,6 +46,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/facturas', facturasRoutes);
 app.use('/api/comprobantes', comprobantesRoutes);
 app.use('/api/cron', cronRoutes);
+app.use('/api/admin/pagos-profesores', pagosProfesoresRoutes);
 
 // Error handler
 app.use((err, req, res, next) => {

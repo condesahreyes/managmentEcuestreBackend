@@ -23,6 +23,8 @@ CREATE TABLE profesores (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   especialidad TEXT,
+  porcentaje_escuelita DECIMAL(5, 2) DEFAULT 0.00 CHECK (porcentaje_escuelita >= 0 AND porcentaje_escuelita <= 100),
+  porcentaje_pension DECIMAL(5, 2) DEFAULT 0.00 CHECK (porcentaje_pension >= 0 AND porcentaje_pension <= 100),
   activo BOOLEAN DEFAULT true,
   created_at TIMESTAMP DEFAULT NOW()
 );
@@ -70,7 +72,7 @@ CREATE TABLE suscripciones (
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   plan_id UUID REFERENCES planes(id),
   fecha_inicio DATE NOT NULL,
-  fecha_fin DATE NOT NULL,
+  fecha_fin DATE, -- NULL para pensiones (indeterminado), fecha específica para escuelita
   activa BOOLEAN DEFAULT true,
   clases_incluidas INTEGER NOT NULL,
   clases_usadas INTEGER DEFAULT 0,
@@ -121,6 +123,18 @@ CREATE TABLE pagos (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Clases mensuales para suscripciones indefinidas (pensión/media pensión)
+CREATE TABLE clases_mensuales (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  suscripcion_id UUID REFERENCES suscripciones(id) ON DELETE CASCADE,
+  mes INTEGER NOT NULL CHECK (mes BETWEEN 1 AND 12),
+  año INTEGER NOT NULL,
+  clases_usadas INTEGER DEFAULT 0,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(suscripcion_id, mes, año)
+);
+
 -- Índices para optimización
 CREATE INDEX idx_clases_fecha ON clases(fecha);
 CREATE INDEX idx_clases_user ON clases(user_id);
@@ -131,3 +145,5 @@ CREATE INDEX idx_suscripciones_activa ON suscripciones(activa);
 CREATE INDEX idx_horarios_fijos_user ON horarios_fijos(user_id);
 CREATE INDEX idx_horarios_profesores_profesor ON horarios_profesores(profesor_id);
 CREATE INDEX idx_horarios_profesores_dia ON horarios_profesores(dia_semana);
+CREATE INDEX idx_clases_mensuales_suscripcion ON clases_mensuales(suscripcion_id);
+CREATE INDEX idx_clases_mensuales_mes_año ON clases_mensuales(mes, año);

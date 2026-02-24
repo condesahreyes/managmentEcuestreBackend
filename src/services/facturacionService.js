@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../config/supabase.js';
+import { ClasesMensualesService } from './clasesMensualesService.js';
 
 /**
  * Servicio para generar facturas mensuales automáticamente
@@ -27,8 +28,9 @@ export class FacturacionService {
   }
 
   /**
-   * Genera facturas para todos los alumnos activos con suscripciones activas
+   * Genera facturas mensuales para suscripciones indefinidas (pensión/media pensión)
    * Se ejecuta el día 1 de cada mes
+   * Solo genera facturas para usuarios con suscripciones activas donde fecha_fin es NULL
    */
   static async generarFacturasMensuales() {
     const ahora = new Date();
@@ -36,44 +38,68 @@ export class FacturacionService {
     const año = ahora.getFullYear();
 
     try {
-      // Obtener todos los usuarios activos con suscripciones activas
+      // Primero obtener usuarios activos de pensión/media pensión
       const { data: usuarios, error: usuariosError } = await supabaseAdmin
         .from('users')
-        .select(`
-          id,
-          nombre,
-          apellido,
-          email,
-          rol,
-          suscripciones!inner(
-            id,
-            plan_id,
-            fecha_fin,
-            activa,
-            planes:plan_id(id, precio, nombre)
-          )
-        `)
+        .select('id, nombre, apellido, email, rol')
         .eq('activo', true)
-        .eq('suscripciones.activa', true)
-        .in('rol', ['escuelita', 'pension_completa', 'media_pension']);
+        .in('rol', ['pension_completa', 'media_pension']);
 
       if (usuariosError) throw usuariosError;
+      if (!usuarios || usuarios.length === 0) {
+        return {
+          exito: true,
+          facturasCreadas: 0,
+          errores: [],
+          totalSuscripciones: 0,
+        };
+      }
+
+      const userIds = usuarios.map(u => u.id);
+
+      // Obtener suscripciones activas e indefinidas de estos usuarios
+      const { data: suscripciones, error: suscripcionesError } = await supabaseAdmin
+        .from('suscripciones')
+        .select(`
+          id,
+          user_id,
+          plan_id,
+          fecha_fin,
+          activa,
+          planes:plan_id(
+            id,
+            precio,
+            nombre,
+            tipo
+          )
+        `)
+        .eq('activa', true)
+        .is('fecha_fin', null) // Solo suscripciones indefinidas
+        .in('user_id', userIds);
+
+      if (suscripcionesError) throw suscripcionesError;
 
       const facturasCreadas = [];
       const errores = [];
 
-      for (const usuario of usuarios || []) {
-        const suscripcion = usuario.suscripciones?.[0];
-        if (!suscripcion || !suscripcion.planes) continue;
+      // Crear un mapa de usuarios por ID para acceso rápido
+      const usuariosMap = new Map(usuarios.map(u => [u.id, u]));
 
-        // Verificar si ya existe factura para este mes
+      for (const suscripcion of suscripciones || []) {
+        if (!suscripcion.planes) continue;
+
+        const usuario = usuariosMap.get(suscripcion.user_id);
+        if (!usuario) continue;
+
+        // Verificar si ya existe factura para este mes y suscripción
         const { data: facturaExistente } = await supabaseAdmin
           .from('facturas')
           .select('id')
           .eq('user_id', usuario.id)
+          .eq('suscripcion_id', suscripcion.id)
           .eq('mes', mes)
           .eq('año', año)
-          .single();
+          .maybeSingle();
 
         if (facturaExistente) {
           continue; // Ya existe factura para este mes
@@ -81,6 +107,13 @@ export class FacturacionService {
 
         // Calcular fecha de vencimiento (día 10 hábil)
         const fechaVencimiento = this.calcularDia10Habil(mes, año);
+
+        // Inicializar tracking de clases para el mes
+        try {
+          await ClasesMensualesService.inicializarMes(suscripcion.id, mes, año);
+        } catch (error) {
+          console.error(`Error al inicializar clases mensuales para ${usuario.email}:`, error);
+        }
 
         // Crear factura
         const { data: factura, error: facturaError } = await supabaseAdmin
@@ -106,9 +139,10 @@ export class FacturacionService {
       }
 
       return {
-        exito: facturasCreadas.length > 0,
+        exito: facturasCreadas.length > 0 || errores.length === 0,
         facturasCreadas: facturasCreadas.length,
         errores,
+        totalSuscripciones: suscripciones?.length || 0,
       };
     } catch (error) {
       console.error('Error al generar facturas:', error);

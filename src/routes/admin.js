@@ -557,7 +557,7 @@ router.get('/profesores', requireRole('admin'), async (req, res) => {
 
 router.post('/profesores', requireRole('admin'), async (req, res) => {
   try {
-    const { nombre, apellido, email, telefono } = req.body;
+    const { nombre, apellido, email, telefono, porcentaje_escuelita, porcentaje_pension } = req.body;
 
     if (!nombre || !apellido || !email) {
       return res.status(400).json({ error: 'Faltan campos requeridos' });
@@ -603,6 +603,8 @@ router.post('/profesores', requireRole('admin'), async (req, res) => {
       .insert({
         user_id: user.id,
         activo: true,
+        porcentaje_escuelita: porcentaje_escuelita || 0,
+        porcentaje_pension: porcentaje_pension || 0,
       })
       .select()
       .single();
@@ -651,7 +653,7 @@ router.post('/profesores', requireRole('admin'), async (req, res) => {
 router.patch('/profesores/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, apellido, telefono, activo, horarios } = req.body;
+    const { nombre, apellido, telefono, activo, horarios, porcentaje_escuelita, porcentaje_pension } = req.body;
 
     // Obtener el profesor para acceder al user_id
     const { data: profesor } = await supabaseAdmin
@@ -683,6 +685,8 @@ router.patch('/profesores/:id', requireRole('admin'), async (req, res) => {
     // Actualizar profesor
     const profesorUpdates = {};
     if (activo !== undefined) profesorUpdates.activo = activo;
+    if (porcentaje_escuelita !== undefined) profesorUpdates.porcentaje_escuelita = porcentaje_escuelita;
+    if (porcentaje_pension !== undefined) profesorUpdates.porcentaje_pension = porcentaje_pension;
 
     if (Object.keys(profesorUpdates).length > 0) {
       const { error: profesorError } = await supabaseAdmin
@@ -701,25 +705,29 @@ router.patch('/profesores/:id', requireRole('admin'), async (req, res) => {
         .update({ activo: false })
         .eq('profesor_id', id);
 
-      // Crear nuevos horarios si hay alguno
-      if (horarios.length > 0) {
-        const horariosData = horarios.map((horario) => ({
+      // Luego, para cada horario nuevo → intentar update o insert
+  for (const horario of horarios) {
+    const { data, error } = await supabaseAdmin
+      .from('horarios_profesores')
+      .upsert(
+        {
           profesor_id: id,
           dia_semana: horario.dia_semana,
           hora_inicio: horario.hora_inicio,
           hora_fin: horario.hora_fin,
           activo: true,
-        }));
-
-        const { error: horariosError } = await supabaseAdmin
-          .from('horarios_profesores')
-          .insert(horariosData);
-
-        if (horariosError) {
-          console.error('Error al actualizar horarios:', horariosError);
-          // No fallamos la actualización si fallan los horarios
+        },
+        {
+          onConflict: 'profesor_id, dia_semana, hora_inicio, hora_fin',
+          ignoreDuplicates: false, // queremos que actualice
         }
-      }
+      );
+
+    if (error) {
+      console.error('Error en upsert de horario:', error);
+    }
+  }
+      
     }
 
     // Obtener datos actualizados
@@ -745,7 +753,7 @@ router.patch('/profesores/:id', requireRole('admin'), async (req, res) => {
 router.post('/alumnos/:id/suscripcion', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { plan_id, fecha_inicio } = req.body;
+    const { plan_id, fecha_inicio, mes, año } = req.body;
 
     if (!plan_id) {
       return res.status(400).json({ error: 'Debes especificar un plan' });
@@ -786,23 +794,44 @@ router.post('/alumnos/:id/suscripcion', requireRole('admin'), async (req, res) =
       .eq('user_id', id)
       .eq('activa', true);
 
-    // Calcular fecha fin (1 mes desde inicio)
-    const inicio = fecha_inicio ? new Date(fecha_inicio) : new Date();
-    const fin = new Date(inicio);
-    fin.setMonth(fin.getMonth() + 1);
+    // Calcular fecha_inicio: si viene mes/año, usar el primer día del mes; si viene fecha_inicio, usarla
+    let inicio;
+    if (mes && año) {
+      inicio = new Date(año, mes - 1, 1);
+    } else if (fecha_inicio) {
+      inicio = new Date(fecha_inicio);
+    } else {
+      inicio = new Date();
+    }
+
+    // Para pensión completa y media pensión: fecha_fin es null (indeterminado)
+    // Para escuelita: fecha_fin es el último día del mes seleccionado
+    let fin = null;
+    if (plan.tipo === 'escuelita') {
+      const { obtenerUltimoDiaDelMes } = await import('../utils/fechas.js');
+      fin = obtenerUltimoDiaDelMes(inicio);
+    }
+    // Para pension_completa y media_pension, fin queda como null
 
     // Crear nueva suscripción
+    const suscripcionData = {
+      user_id: id,
+      plan_id: plan_id,
+      fecha_inicio: inicio.toISOString().split('T')[0],
+      clases_incluidas: plan.clases_mes,
+      clases_usadas: 0,
+      activa: true,
+    };
+
+    // Solo agregar fecha_fin si no es null (para escuelita)
+    // Para pensiones, fecha_fin será null (indeterminado)
+    if (fin) {
+      suscripcionData.fecha_fin = fin.toISOString().split('T')[0];
+    }
+    // Si fin es null, no se agrega fecha_fin al objeto (será null en la BD si el schema lo permite)
     const { data: suscripcion, error } = await supabaseAdmin
       .from('suscripciones')
-      .insert({
-        user_id: id,
-        plan_id: plan_id,
-        fecha_inicio: inicio.toISOString().split('T')[0],
-        fecha_fin: fin.toISOString().split('T')[0],
-        clases_incluidas: plan.clases_mes,
-        clases_usadas: 0,
-        activa: true,
-      })
+      .insert(suscripcionData)
       .select(`
         *,
         planes:plan_id(*)
@@ -818,6 +847,112 @@ router.post('/alumnos/:id/suscripcion', requireRole('admin'), async (req, res) =
   } catch (error) {
     console.error('Error al asignar suscripción:', error);
     res.status(500).json({ error: 'Error al asignar suscripción' });
+  }
+});
+
+// Obtener todas las suscripciones de un alumno (solo admin)
+router.get('/alumnos/:id/suscripciones', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: suscripciones, error } = await supabaseAdmin
+      .from('suscripciones')
+      .select(`
+        *,
+        planes:plan_id(*)
+      `)
+      .eq('user_id', id)
+      .order('fecha_inicio', { ascending: false });
+
+    if (error) throw error;
+
+    res.json(suscripciones || []);
+  } catch (error) {
+    console.error('Error al obtener suscripciones del alumno:', error);
+    res.status(500).json({ error: 'Error al obtener suscripciones' });
+  }
+});
+
+// Editar suscripción (solo admin)
+router.patch('/suscripciones/:id', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { plan_id, mes, año, fecha_inicio, clases_incluidas, clases_usadas, activa } = req.body;
+
+    const { data: suscripcionExistente, error: fetchError } = await supabaseAdmin
+      .from('suscripciones')
+      .select('*, planes:plan_id(id, tipo, clases_mes)')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !suscripcionExistente) {
+      return res.status(404).json({ error: 'Suscripción no encontrada' });
+    }
+
+    const updates = {};
+    let planTipo = suscripcionExistente.planes?.tipo;
+
+    if (plan_id !== undefined) {
+      const { data: plan } = await supabaseAdmin.from('planes').select('*').eq('id', plan_id).single();
+      if (!plan) return res.status(404).json({ error: 'Plan no encontrado' });
+      updates.plan_id = plan_id;
+      updates.clases_incluidas = plan.clases_mes;
+      planTipo = plan.tipo;
+    }
+
+    if (mes !== undefined && año !== undefined) {
+      const inicio = new Date(año, mes - 1, 1);
+      updates.fecha_inicio = inicio.toISOString().split('T')[0];
+      if (planTipo === 'escuelita') {
+        const { obtenerUltimoDiaDelMes } = await import('../utils/fechas.js');
+        const fin = obtenerUltimoDiaDelMes(inicio);
+        updates.fecha_fin = fin.toISOString().split('T')[0];
+      } else {
+        updates.fecha_fin = null; // Pensiones: indeterminado
+      }
+    } else if (fecha_inicio) {
+      updates.fecha_inicio = fecha_inicio;
+    }
+
+    if (clases_incluidas !== undefined) updates.clases_incluidas = clases_incluidas;
+    if (clases_usadas !== undefined) updates.clases_usadas = clases_usadas;
+    if (activa !== undefined) updates.activa = activa;
+
+    const { data: suscripcion, error } = await supabaseAdmin
+      .from('suscripciones')
+      .update(updates)
+      .eq('id', id)
+      .select(`
+        *,
+        planes:plan_id(*)
+      `)
+      .single();
+
+    if (error) throw error;
+
+    res.json({ mensaje: 'Suscripción actualizada', suscripcion });
+  } catch (error) {
+    console.error('Error al editar suscripción:', error);
+    res.status(500).json({ error: 'Error al editar suscripción' });
+  }
+});
+
+// Eliminar suscripción (solo admin)
+router.delete('/suscripciones/:id', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabaseAdmin
+      .from('suscripciones')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
+
+    res.json({ mensaje: 'Suscripción eliminada correctamente' });
+  } catch (error) {
+    console.error('Error al eliminar suscripción:', error);
+    res.status(500).json({ error: 'Error al eliminar suscripción' });
   }
 });
 

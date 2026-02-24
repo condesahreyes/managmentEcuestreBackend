@@ -15,8 +15,9 @@ router.post('/generar-facturas', async (req, res) => {
   try {
     const resultado = await FacturacionService.generarFacturasMensuales();
     res.json({
-      mensaje: `Proceso completado. Se generaron ${resultado.facturasCreadas} facturas`,
+      mensaje: `Proceso completado. Se generaron ${resultado.facturasCreadas} facturas de ${resultado.totalSuscripciones} suscripciones indefinidas`,
       facturasCreadas: resultado.facturasCreadas,
+      totalSuscripciones: resultado.totalSuscripciones,
       errores: resultado.errores,
       timestamp: new Date().toISOString(),
     });

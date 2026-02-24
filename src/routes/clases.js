@@ -142,6 +142,12 @@ router.post('/cancelar/:claseId', async (req, res) => {
 
     // Devolver clase al contador si no era extra
     if (!clase.es_extra) {
+      const { data: user } = await supabaseAdmin
+        .from('users')
+        .select('rol')
+        .eq('id', req.user.id)
+        .single();
+
       const { data: suscripcion } = await supabaseAdmin
         .from('suscripciones')
         .select('*')
@@ -150,10 +156,18 @@ router.post('/cancelar/:claseId', async (req, res) => {
         .single();
 
       if (suscripcion) {
-        await supabaseAdmin
-          .from('suscripciones')
-          .update({ clases_usadas: Math.max(0, suscripcion.clases_usadas - 1) })
-          .eq('id', suscripcion.id);
+        if (user.rol === 'escuelita') {
+          await supabaseAdmin
+            .from('suscripciones')
+            .update({ clases_usadas: Math.max(0, suscripcion.clases_usadas - 1) })
+            .eq('id', suscripcion.id);
+        } else if (['pension_completa', 'media_pension'].includes(user.rol)) {
+          const fechaClase = new Date(clase.fecha);
+          const mes = fechaClase.getMonth() + 1;
+          const año = fechaClase.getFullYear();
+          const { ClasesMensualesService } = await import('../services/clasesMensualesService.js');
+          await ClasesMensualesService.decrementarClasesUsadas(suscripcion.id, mes, año);
+        }
       }
     }
 

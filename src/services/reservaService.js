@@ -5,20 +5,169 @@ import { ClasesMensualesService } from './clasesMensualesService.js';
  * Servicio para validar y crear reservas con todas las validaciones requeridas
  */
 export class ReservaService {
+
+  // ---------------------------------------------------------------------------
+  // NUEVA REGLA DE NEGOCIO: Validación de acceso mensual por pagos
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Verifica si existe un pago registrado para el usuario en un mes/año dado.
+   * Busca en la tabla `pagos` los registros con estado 'pagado'/'aprobado'/etc.
+   */
+  static async tienePagoRegistrado(userId, mes, año) {
+    const { data, error } = await supabaseAdmin
+      .from('facturas')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('mes', mes)
+      .eq('año', año)
+      .in('estado', ['pagado', 'pagada', 'aprobado', 'confirmado'])
+      .maybeSingle();
+
+    if (error) {
+      console.error('[tienePagoRegistrado] Error consultando pagos:', error);
+      return false;
+    }
+    return !!data;
+  }
+
+  /**
+   * Valida si el usuario (pension_completa / media_pension) puede reservar
+   * para la fecha dada, según las reglas de acceso mensual por pagos.
+   *
+   * Reglas:
+   *  - No se permiten reservas en meses pasados.
+   *  - Solo se puede reservar el mes actual o el mes inmediatamente siguiente.
+   *  - No se puede "saltar" meses sin tenerlos pagos.
+   *
+   *  Mes actual:
+   *    · día actual ≤ 10 → permitir aunque no haya pago.
+   *    · día actual > 10 → requiere pago del mes actual.
+   *
+   *  Mes siguiente:
+   *    · Solo si tiene pago del mes actual.
+   *    · Si día actual > 10 del mes siguiente → también requiere pago de ese mes siguiente.
+   *      (Caso que no debería ocurrir normalmente, pero se cubre por robustez.)
+   *
+   * @returns {{ valido: boolean, error?: string, mesAdeudado?: number, añoAdeudado?: number }}
+   */
+  static async validarAccesoMensualPorPagos(userId, fecha) {
+    const hoy = new Date();
+    const diaHoy = hoy.getDate();
+    const mesHoy = hoy.getMonth() + 1;   // 1-12
+    const añoHoy = hoy.getFullYear();
+
+    const fechaClase = new Date(fecha);
+    const mesClase = fechaClase.getMonth() + 1;
+    const añoClase = fechaClase.getFullYear();
+
+    // Helper: comparar mes/año como número entero (yyyymm)
+    const toYYYYMM = (m, a) => a * 100 + m;
+    const claseYYYYMM  = toYYYYMM(mesClase, añoClase);
+    const actualYYYYMM = toYYYYMM(mesHoy, añoHoy);
+
+    // Calcular mes siguiente al actual
+    const mesSiguiente = mesHoy === 12 ? 1 : mesHoy + 1;
+    const añoSiguiente = mesHoy === 12 ? añoHoy + 1 : añoHoy;
+    const siguienteYYYYMM = toYYYYMM(mesSiguiente, añoSiguiente);
+
+    const nombreMes = (m, a) => `${m}/${a}`;
+
+    // 1. No se permiten meses pasados
+    if (claseYYYYMM < actualYYYYMM) {
+      return {
+        valido: false,
+        error: `No se pueden hacer reservas en meses pasados (${nombreMes(mesClase, añoClase)}).`,
+      };
+    }
+
+    // 2. No se permiten meses más allá del siguiente
+    if (claseYYYYMM > siguienteYYYYMM) {
+      return {
+        valido: false,
+        error: `Solo puedes reservar para el mes actual (${nombreMes(mesHoy, añoHoy)}) o el siguiente (${nombreMes(mesSiguiente, añoSiguiente)}).`,
+      };
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Reserva en el MES ACTUAL
+    // ------------------------------------------------------------------
+    if (claseYYYYMM === actualYYYYMM) {
+      if (diaHoy <= 10) {
+        // Período de gracia — se permite sin pago
+        return { valido: true };
+      }
+
+      // Día > 10 → requiere pago del mes actual
+      const pagado = await this.tienePagoRegistrado(userId, mesHoy, añoHoy);
+      if (!pagado) {
+        return {
+          valido: false,
+          mesAdeudado: mesHoy,
+          añoAdeudado: añoHoy,
+          error: `Tu pago de ${nombreMes(mesHoy, añoHoy)} está pendiente. Por favor regulariza tu situación para continuar reservando.`,
+        };
+      }
+
+      return { valido: true };
+    }
+
+    // ------------------------------------------------------------------
+    // 4. Reserva en el MES SIGUIENTE
+    // ------------------------------------------------------------------
+    if (claseYYYYMM === siguienteYYYYMM) {
+      // Verificar que el mes actual esté pago
+      const pagadoActual = diaHoy <= 10
+        ? true
+        : await this.tienePagoRegistrado(userId, mesHoy, añoHoy);
+
+      if (!pagadoActual) {
+        return {
+          valido: false,
+          mesAdeudado: mesHoy,
+          añoAdeudado: añoHoy,
+          error: `Debes tener el mes ${nombreMes(mesHoy, añoHoy)} al día antes de reservar en ${nombreMes(mesSiguiente, añoSiguiente)}.`,
+        };
+      }
+      // Si estamos en período de gracia (día ≤ 10), solo permitir hasta el día 10 del mes siguiente
+      const pagadoSiguiente = await this.tienePagoRegistrado(userId, mesSiguiente, añoSiguiente);
+      const diaClase = fechaClase.getDate();
+
+      if (diaClase <= 10) {
+        return { valido: true };
+      }
+
+      // Día actual > 10 → requiere pago del mes siguiente
+      if (!pagadoSiguiente) {
+        return {
+          valido: false,
+          mesAdeudado: mesSiguiente,
+          añoAdeudado: añoSiguiente,
+          error: `Tu pago de ${nombreMes(mesSiguiente, añoSiguiente)} está pendiente. Por favor regulariza tu situación para continuar reservando.`,
+        };
+      }
+    }
+    // Fallback (no debería llegar aquí)
+    return { valido: true };
+  }
+
+  // ---------------------------------------------------------------------------
+  // MÉTODO PRINCIPAL DE VALIDACIÓN
+  // ---------------------------------------------------------------------------
+
   /**
    * Valida todas las condiciones para una reserva
    * Orden de validación:
    * 1. Usuario activo
    * 2. Plan vigente
    * 3. Tiene clases disponibles
+   * 3b. [NUEVO] Acceso mensual por pagos (pension / media_pension)
    * 4. Profesor disponible
    * 5. Caballo disponible
    * 6. No supera límite diario del caballo
    * 7. No hay conflicto de horario
    */
   static async validarReserva(userId, profesorId, caballoId, fecha, horaInicio, horaFin) {
-    const errores = [];
-
     // 1. Validar usuario activo
     const { data: user, error: userError } = await supabaseAdmin
       .from('users')
@@ -34,10 +183,22 @@ export class ReservaService {
       return { valido: false, error: 'Usuario bloqueado. Contacta al administrador.' };
     }
 
+        // 1b. Validar que la fecha no sea pasada (solo pension y media_pension)
+    if (['pension_completa', 'media_pension'].includes(user.rol)) {
+      const hoy = new Date();
+      hoy.setHours(0, 0, 0, 0);
+      const fechaReserva = new Date(fecha + 'T00:00:00');
+      fechaReserva.setHours(0, 0, 0, 0);
+
+      if (fechaReserva < hoy) {
+        return { valido: false, error: 'No puedes reservar clases en fechas pasadas.' };
+      }
+    }
+
     // 2. Validar plan vigente (solo para escuelita y pension)
     if (['escuelita', 'pension_completa', 'media_pension'].includes(user.rol)) {
       const hoy = new Date().toISOString().split('T')[0];
-      const { data: suscripcion, error } = await supabaseAdmin
+      const { data: suscripcion } = await supabaseAdmin
         .from('suscripciones')
         .select('*')
         .eq('user_id', userId)
@@ -57,14 +218,22 @@ export class ReservaService {
           return { valido: false, error: 'No tienes clases disponibles en tu plan.' };
         }
       } else if (['pension_completa', 'media_pension'].includes(user.rol)) {
-        // Para pensión/media pensión, validar clases del mes específico
         const fechaClase = new Date(fecha);
         const mes = fechaClase.getMonth() + 1;
         const año = fechaClase.getFullYear();
-        
+
         const clasesMes = await ClasesMensualesService.obtenerClasesDisponibles(suscripcion.id, mes, año);
         if (clasesMes.clasesDisponibles <= 0) {
-          return { valido: false, error: `No tienes clases disponibles para ${mes}/${año}. Has usado ${clasesMes.clasesUsadas} de ${clasesMes.clasesIncluidas} clases.` };
+          return {
+            valido: false,
+            error: `No tienes clases disponibles para ${mes}/${año}. Has usado ${clasesMes.clasesUsadas} de ${clasesMes.clasesIncluidas} clases.`,
+          };
+        }
+
+        // 3b. [NUEVO] Validar acceso mensual por pagos
+        const accesoMensual = await this.validarAccesoMensualPorPagos(userId, fecha);
+        if (!accesoMensual.valido) {
+          return { valido: false, error: accesoMensual.error };
         }
       }
     }
@@ -122,34 +291,35 @@ export class ReservaService {
     }
 
     // 7. Validar conflicto de horario del usuario (solo para media pensión)
-    if (user.rol === 'media_pension') {
+    if (['pension_completa', 'media_pension'].includes(user.rol)) {
       const { data: userClases } = await supabaseAdmin
         .from('clases')
         .select('id')
         .eq('user_id', userId)
         .eq('fecha', fecha)
-        .eq('estado', 'programada')
-        .or(`hora_inicio.eq.${horaInicio},and(hora_inicio.lt.${horaFin},hora_fin.gt.${horaInicio})`);
+        .eq('estado', 'programada');
 
       if (userClases && userClases.length > 0) {
-        return { valido: false, error: 'Ya tienes una clase programada en ese horario.' };
+        return { valido: false, error: 'Ya tienes una clase programada para ese día.' };
       }
     }
 
     return { valido: true };
   }
 
+  // ---------------------------------------------------------------------------
+  // CREAR RESERVA
+  // ---------------------------------------------------------------------------
+
   /**
    * Crea una reserva validando todas las condiciones
    */
   static async crearReserva(userId, profesorId, caballoId, fecha, horaInicio, horaFin, notas = null) {
-    // Validar primero
     const validacion = await this.validarReserva(userId, profesorId, caballoId, fecha, horaInicio, horaFin);
     if (!validacion.valido) {
       return { exito: false, error: validacion.error };
     }
 
-    // Obtener información del usuario para determinar si es clase extra
     const { data: user } = await supabaseAdmin
       .from('users')
       .select('rol')
@@ -161,7 +331,6 @@ export class ReservaService {
     const mes = fechaClase.getMonth() + 1;
     const año = fechaClase.getFullYear();
 
-    // Verificar si excede el plan
     if (user.rol === 'escuelita') {
       const { data: suscripcion } = await supabaseAdmin
         .from('suscripciones')
@@ -190,7 +359,6 @@ export class ReservaService {
       }
     }
 
-    // Crear la clase
     const { data: clase, error } = await supabaseAdmin
       .from('clases')
       .insert({
@@ -201,7 +369,7 @@ export class ReservaService {
         hora_inicio: horaInicio,
         hora_fin: horaFin,
         es_extra: esExtra,
-        notas
+        notas,
       })
       .select()
       .single();
@@ -210,7 +378,6 @@ export class ReservaService {
       return { exito: false, error: 'Error al crear la reserva' };
     }
 
-    // Actualizar contador de clases usadas si no es extra
     if (!esExtra) {
       if (user.rol === 'escuelita') {
         const { data: suscripcion } = await supabaseAdmin
@@ -243,11 +410,14 @@ export class ReservaService {
     return { exito: true, clase };
   }
 
+  // ---------------------------------------------------------------------------
+  // REAGENDAR
+  // ---------------------------------------------------------------------------
+
   /**
    * Reagenda una clase (mínimo 24 horas de anticipación)
    */
   static async reagendarClase(claseId, nuevaFecha, nuevaHoraInicio, nuevaHoraFin, userId) {
-    // Verificar que la clase pertenece al usuario
     const { data: clase } = await supabaseAdmin
       .from('clases')
       .select('*')
@@ -259,7 +429,6 @@ export class ReservaService {
       return { exito: false, error: 'Clase no encontrada' };
     }
 
-    // Validar 24 horas de anticipación
     const ahora = new Date();
     const fechaClase = new Date(`${nuevaFecha}T${nuevaHoraInicio}`);
     const diferenciaHoras = (fechaClase - ahora) / (1000 * 60 * 60);
@@ -268,7 +437,6 @@ export class ReservaService {
       return { exito: false, error: 'Debes reagendar con al menos 24 horas de anticipación' };
     }
 
-    // Validar nueva disponibilidad
     const validacion = await this.validarReserva(
       userId,
       clase.profesor_id,
@@ -282,14 +450,12 @@ export class ReservaService {
       return { exito: false, error: validacion.error };
     }
 
-    // Obtener información del usuario
     const { data: user } = await supabaseAdmin
       .from('users')
       .select('rol')
       .eq('id', userId)
       .single();
 
-    // Si no era extra, ajustar contadores de clases mensuales si cambia de mes
     if (!clase.es_extra && ['pension_completa', 'media_pension'].includes(user?.rol)) {
       const { data: suscripcion } = await supabaseAdmin
         .from('suscripciones')
@@ -307,7 +473,6 @@ export class ReservaService {
         const mesNueva = fechaNueva.getMonth() + 1;
         const añoNueva = fechaNueva.getFullYear();
 
-        // Si cambia de mes, decrementar del mes original e incrementar del nuevo
         if (mesOriginal !== mesNueva || añoOriginal !== añoNueva) {
           await ClasesMensualesService.decrementarClasesUsadas(suscripcion.id, mesOriginal, añoOriginal);
           await ClasesMensualesService.incrementarClasesUsadas(suscripcion.id, mesNueva, añoNueva);
@@ -315,7 +480,6 @@ export class ReservaService {
       }
     }
 
-    // Marcar clase original como reagendada y crear nueva
     await supabaseAdmin
       .from('clases')
       .update({ estado: 'reagendada' })
@@ -333,7 +497,7 @@ export class ReservaService {
         es_reagendada: true,
         clase_original_id: claseId,
         es_extra: clase.es_extra,
-        notas: clase.notas
+        notas: clase.notas,
       })
       .select()
       .single();

@@ -9,22 +9,26 @@ export class FacturacionService {
    * Calcula el día 10 hábil de un mes
    */
   static calcularDia10Habil(mes, año) {
-    let fecha = new Date(año, mes - 1, 1);
-    let diasHabiles = 0;
-    let diaActual = 1;
+    // Crear fecha en zona local (año, mesIndex, día)
+    const fecha = new Date(año, mes - 1, 10);
 
-    while (diasHabiles < 10) {
-      const diaSemana = fecha.getDay();
-      // Lunes a Viernes son hábiles (1-5)
-      if (diaSemana >= 1 && diaSemana <= 5) {
-        diasHabiles++;
-        if (diasHabiles === 10) {
-          return fecha.toISOString().split('T')[0];
-        }
-      }
-      fecha.setDate(++diaActual);
+    const diaSemana = fecha.getDay(); 
+    // 0 = domingo, 6 = sábado
+
+    if (diaSemana === 6) {
+      // Si es sábado → sumar 2 días (lunes)
+      fecha.setDate(fecha.getDate() + 2);
+    } else if (diaSemana === 0) {
+      // Si es domingo → sumar 1 día (lunes)
+      fecha.setDate(fecha.getDate() + 1);
     }
-    return fecha.toISOString().split('T')[0];
+
+    // Formatear YYYY-MM-DD sin problemas de zona horaria
+    const year = fecha.getFullYear();
+    const month = String(fecha.getMonth() + 1).padStart(2, '0');
+    const day = String(fecha.getDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
   }
 
   /**

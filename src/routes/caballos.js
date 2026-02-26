@@ -21,8 +21,8 @@ router.get('/disponibles', authenticateToken, async (req, res) => {
       // Escuelita solo ve caballos de tipo "escuela"
       caballosQuery = caballosQuery.eq('tipo', 'escuela');
     } else if (['pension_completa', 'media_pension'].includes(req.user.rol)) {
-      // Pensión/Media Pensión solo ve su caballo asignado
-      caballosQuery = caballosQuery.eq('dueno_id', req.user.id);
+      // Pensión/Media Pensión: obtener caballos donde son propietarios (dueno_id o dueno_id2)
+      caballosQuery = caballosQuery.or(`dueno_id.eq.${req.user.id},dueno_id2.eq.${req.user.id}`);
     }
 
     const { data: caballos, error: caballosError } = await caballosQuery;

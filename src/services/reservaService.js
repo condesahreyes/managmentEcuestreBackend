@@ -152,6 +152,61 @@ export class ReservaService {
   }
 
   // ---------------------------------------------------------------------------
+  // VALIDACIÓN DE CABALLOS COMPARTIDOS (media pensión)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Obtiene el co-propietario de un caballo (para media pensión)
+   * @returns { user_id, rol } o null
+   */
+  static async obtenerCoPropietario(caballoId, userIdActual) {
+    const { data: caballo } = await supabaseAdmin
+      .from('caballos')
+      .select('dueno_id, dueno_id2')
+      .eq('id', caballoId)
+      .single();
+
+    if (!caballo) return null;
+
+    // Retornar el otro propietario
+    if (caballo.dueno_id === userIdActual && caballo.dueno_id2) {
+      return caballo.dueno_id2;
+    } else if (caballo.dueno_id2 === userIdActual && caballo.dueno_id) {
+      return caballo.dueno_id;
+    }
+
+    return null;
+  }
+
+  /**
+   * Obtiene las clases del co-propietario que se superponen en horario
+   * @returns array de clases que entran en conflicto
+   */
+  static async obtenerClasesDelCoPropietario(caballoId, userIdActual, fecha, horaInicio, horaFin) {
+    const coPropietarioId = await this.obtenerCoPropietario(caballoId, userIdActual);
+
+    if (!coPropietarioId) return [];
+
+    const { data: clases } = await supabaseAdmin
+      .from('clases')
+      .select('id, user_id, hora_inicio, hora_fin')
+      .eq('caballo_id', caballoId)
+      .eq('user_id', coPropietarioId)
+      .eq('fecha', fecha)
+      .eq('estado', 'programada');
+
+    if (!clases) return [];
+
+    // Verificar si hay superposición de horario
+    return clases.filter(clase => {
+      const claseInicio = clase.hora_inicio;
+      const claseFin = clase.hora_fin;
+      // Hay superposición si NO es: fin ≤ inicio O inicio ≥ fin
+      return !(horaFin <= claseInicio || horaInicio >= claseFin);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // MÉTODO PRINCIPAL DE VALIDACIÓN
   // ---------------------------------------------------------------------------
 
@@ -166,6 +221,7 @@ export class ReservaService {
    * 5. Caballo disponible
    * 6. No supera límite diario del caballo
    * 7. No hay conflicto de horario
+   * 8. [NUEVO] Para media pensión: no hay conflicto con co-propietario 
    */
   static async validarReserva(userId, profesorId, caballoId, fecha, horaInicio, horaFin) {
     // 1. Validar usuario activo
@@ -290,7 +346,7 @@ export class ReservaService {
       return { valido: false, error: `El caballo ha alcanzado su límite diario de ${caballo.limite_clases_dia} clases.` };
     }
 
-    // 7. Validar conflicto de horario del usuario (solo para media pensión)
+    // 7. Validar conflicto de horario del usuario (para pensión/media pensión)
     if (['pension_completa', 'media_pension'].includes(user.rol)) {
       const { data: userClases } = await supabaseAdmin
         .from('clases')
@@ -301,6 +357,18 @@ export class ReservaService {
 
       if (userClases && userClases.length > 0) {
         return { valido: false, error: 'Ya tienes una clase programada para ese día.' };
+      }
+
+      // 8. [NUEVO] Para media pensión: validar que no haya conflicto con el co-propietario del caballo
+      if (user.rol === 'media_pension') {
+        const clasesConflictoCopropietario = await this.obtenerClasesDelCoPropietario(caballoId, userId, fecha, horaInicio, horaFin);
+        
+        if (clasesConflictoCopropietario && clasesConflictoCopropietario.length > 0) {
+          return {
+            valido: false,
+            error: `No puedes reservar en ese horario. Tu co-propietario del caballo ya tiene una clase programada en ese horario.`,
+          };
+        }
       }
     }
 

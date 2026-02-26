@@ -239,17 +239,18 @@ router.patch('/alumnos/:id/bloquear', requireRole('admin'), async (req, res) => 
 // CRUD de Caballos (solo admin)
 router.get('/caballos', requireRole('admin'), async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data: caballos, error } = await supabaseAdmin
       .from('caballos')
       .select(`
         *,
-        dueno:dueno_id(id, nombre, apellido, email)
+        dueno:dueno_id(id, nombre, apellido, email, rol),
+        dueno2:dueno_id2(id, nombre, apellido, email, rol)
       `)
       .order('nombre', { ascending: true });
 
     if (error) throw error;
 
-    res.json(data || []);
+    res.json(caballos || []);
   } catch (error) {
     console.error('Error al obtener caballos:', error);
     res.status(500).json({ error: 'Error al obtener caballos' });
@@ -277,7 +278,7 @@ router.get('/duenos', requireRole('admin'), async (req, res) => {
 
 router.post('/caballos', requireRole('admin'), async (req, res) => {
   try {
-    const { nombre, tipo, estado, limite_clases_dia, dueno_id } = req.body;
+    const { nombre, tipo, estado, limite_clases_dia, dueno_id, dueno_id2 } = req.body;
 
     if (!nombre || !tipo || !estado || !limite_clases_dia) {
       return res.status(400).json({ error: 'Faltan campos requeridos' });
@@ -291,12 +292,12 @@ router.post('/caballos', requireRole('admin'), async (req, res) => {
       return res.status(400).json({ error: 'Estado inválido' });
     }
 
-    // Si es privado, debe tener dueño
-    if (tipo === 'privado' && !dueno_id) {
-      return res.status(400).json({ error: 'Los caballos privados deben tener un dueño asignado' });
+    // Si es privado, debe tener al menos un dueño
+    if (tipo === 'privado' && !dueno_id && !dueno_id2) {
+      return res.status(400).json({ error: 'Los caballos privados deben tener al menos un dueño asignado' });
     }
 
-    // Si es escuela, no debe tener dueño
+    // Si es escuela, no debe tener dueños
     const insertData = {
       nombre,
       tipo,
@@ -305,10 +306,12 @@ router.post('/caballos', requireRole('admin'), async (req, res) => {
       activo: true,
     };
 
-    if (tipo === 'privado' && dueno_id) {
-      insertData.dueno_id = dueno_id;
+    if (tipo === 'privado') {
+      if (dueno_id) insertData.dueno_id = dueno_id;
+      if (dueno_id2) insertData.dueno_id2 = dueno_id2;
     } else {
       insertData.dueno_id = null;
+      insertData.dueno_id2 = null;
     }
 
     const { data, error } = await supabaseAdmin
@@ -316,7 +319,8 @@ router.post('/caballos', requireRole('admin'), async (req, res) => {
       .insert(insertData)
       .select(`
         *,
-        dueno:dueno_id(id, nombre, apellido, email)
+        dueno:dueno_id(id, nombre, apellido, email, rol),
+        dueno2:dueno_id2(id, nombre, apellido, email, rol)
       `)
       .single();
 
@@ -349,23 +353,32 @@ router.patch('/caballos/:id', requireRole('admin'), async (req, res) => {
       updates.limite_clases_dia = parseInt(updates.limite_clases_dia);
     }
 
+    // Convertir strings vacíos a null para UUIDs
+    if (updates.dueno_id === '') {
+      updates.dueno_id = null;
+    }
+    if (updates.dueno_id2 === '') {
+      updates.dueno_id2 = null;
+    }
+
     // Si cambia a privado, debe tener dueño
-    if (updates.tipo === 'privado' && !updates.dueno_id) {
+    if (updates.tipo === 'privado' && !updates.dueno_id && !updates.dueno_id2) {
       // Obtener el caballo actual para verificar si ya tiene dueño
       const { data: caballoActual } = await supabaseAdmin
         .from('caballos')
-        .select('dueno_id')
+        .select('dueno_id, dueno_id2')
         .eq('id', id)
         .single();
 
-      if (!caballoActual?.dueno_id) {
-        return res.status(400).json({ error: 'Los caballos privados deben tener un dueño asignado' });
+      if (!caballoActual?.dueno_id && !caballoActual?.dueno_id2) {
+        return res.status(400).json({ error: 'Los caballos privados deben tener al menos un dueño asignado' });
       }
     }
 
-    // Si cambia a escuela, eliminar dueño
+    // Si cambia a escuela, eliminar dueños
     if (updates.tipo === 'escuela') {
       updates.dueno_id = null;
+      updates.dueno_id2 = null;
     }
 
     const { data, error } = await supabaseAdmin
@@ -374,7 +387,8 @@ router.patch('/caballos/:id', requireRole('admin'), async (req, res) => {
       .eq('id', id)
       .select(`
         *,
-        dueno:dueno_id(id, nombre, apellido, email)
+        dueno:dueno_id(id, nombre, apellido, email, rol),
+        dueno2:dueno_id2(id, nombre, apellido, email, rol)
       `)
       .single();
 
@@ -1081,4 +1095,6 @@ router.delete('/profesores/:id', requireRole('admin'), async (req, res) => {
   }
 });
 
+// -------------------
 export default router;
+

@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../config/supabase.js';
 import { ClasesMensualesService } from './clasesMensualesService.js';
-
+import { toMinutes } from '../utils/fechas.js';
 /**
  * Servicio para validar y crear reservas con todas las validaciones requeridas
  */
@@ -197,12 +197,15 @@ export class ReservaService {
 
     if (!clases) return [];
 
-    // Verificar si hay superposición de horario
     return clases.filter(clase => {
-      const claseInicio = clase.hora_inicio;
-      const claseFin = clase.hora_fin;
-      // Hay superposición si NO es: fin ≤ inicio O inicio ≥ fin
-      return !(horaFin <= claseInicio || horaInicio >= claseFin);
+      const claseInicio = toMinutes(clase.hora_inicio);
+      const claseFin = toMinutes(clase.hora_fin);
+
+      const nuevaInicio = toMinutes(horaInicio);
+      const nuevaFin = toMinutes(horaFin);
+
+      // superposición real
+      return nuevaInicio < claseFin && nuevaFin > claseInicio;
     });
   }
 
@@ -353,7 +356,6 @@ export class ReservaService {
         .select('id')
         .eq('user_id', userId)
         .eq('fecha', fecha)
-        .eq('hora_inicio', horaInicio)
         .eq('estado', 'programada');
 
       if (userClases && userClases.length > 0) {

@@ -61,3 +61,8 @@ export function obtenerPrimerDiaSiguienteMes(fecha) {
   const mes = fecha.getMonth() + 1;
   return new Date(año, mes, 1);
 }
+
+export function  toMinutes(hora) {
+      const [h, m] = hora.split(':');
+      return Number(h) * 60 + Number(m);
+    }

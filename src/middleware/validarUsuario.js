@@ -27,8 +27,6 @@ export const validarUsuarioCompleto = async (req, res, next) => {
       .single();
 
     if (!caballo || !suscripcion) {
-      console.log("holaaa")
-      console.log({caballo, suscripcion})
       return res.status(403).json({
         error: 'PENDIENTE_APROBACION',
         mensaje: 'Tu cuenta está pendiente de aprobación. El administrador debe asignarte un caballo y una suscripción para poder usar la aplicación.',

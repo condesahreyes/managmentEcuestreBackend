@@ -305,7 +305,7 @@ export class ReservaService {
       .eq('fecha', fecha)
       .eq('estado', 'programada')
       .or(`hora_inicio.eq.${horaInicio},and(hora_inicio.lt.${horaFin},hora_fin.gt.${horaInicio})`);
-      
+
     // ToDo No aplica, deberia a futuro que el profesor tenga un limite de alumnos y lo cheque contra ese valor configurable
     // if (profesorClases && profesorClases.length > 0) {
     //   return { valido: false, error: 'El profesor no está disponible en ese horario.' };
@@ -397,7 +397,7 @@ export class ReservaService {
       .select('rol')
       .eq('id', userId)
       .single();
-    console.log("legga 2")
+
     let esExtra = false;
     const fechaClase = new Date(fecha);
     const mes = fechaClase.getMonth() + 1;
@@ -424,7 +424,7 @@ export class ReservaService {
         .eq('user_id', userId)
         .eq('activa', true)
         .single();
-      console.log({suscripcion})
+
       if (suscripcion) {
         const clasesMes = await ClasesMensualesService.obtenerClasesDisponibles(suscripcion.id, mes, año);
         esExtra = clasesMes.clasesDisponibles <= 0;
@@ -445,7 +445,6 @@ export class ReservaService {
       })
       .select()
       .single();
-      console.log({clase, error})
     if (error) {
       return { exito: false, error: 'Error al crear la reserva' };
     }

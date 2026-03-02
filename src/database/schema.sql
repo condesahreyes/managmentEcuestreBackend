@@ -101,15 +101,18 @@ CREATE TABLE clases (
   hora_inicio TIME NOT NULL,
   hora_fin TIME NOT NULL,
   estado class_status DEFAULT 'programada',
-  es_extra BOOLEAN DEFAULT false, -- Para clases que exceden el plan
+  es_extra BOOLEAN DEFAULT false,
   es_reagendada BOOLEAN DEFAULT false,
   clase_original_id UUID REFERENCES clases(id) ON DELETE SET NULL,
   notas TEXT,
   created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  UNIQUE(profesor_id, fecha, hora_inicio),
-  UNIQUE(caballo_id, fecha, hora_inicio)
+  updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- Único solo para caballo cuando esté programada
+CREATE UNIQUE INDEX unique_caballo_programada
+ON clases (caballo_id, fecha, hora_inicio)
+WHERE estado = 'programada';
 
 -- Pagos
 CREATE TABLE pagos (

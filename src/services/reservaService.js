@@ -252,6 +252,19 @@ export class ReservaService {
       if (fechaReserva < hoy) {
         return { valido: false, error: 'No puedes reservar clases en fechas pasadas.' };
       }
+
+      // 1c. Validar que no haya menos de 24 horas de anticipación
+      const ahora = new Date();
+      const fechaYHoraClase = new Date(`${fecha}T${horaInicio}`);
+      const diferenciaMilisegundos = fechaYHoraClase - ahora;
+      const diferenciaHoras = diferenciaMilisegundos / (1000 * 60 * 60);
+
+      if (diferenciaHoras < 24) {
+        return {
+          valido: false,
+          error: 'Debes reservar con al menos 24 horas de anticipación.',
+        };
+      }
     }
 
     // 2. Validar plan vigente (solo para escuelita y pension)

@@ -226,16 +226,17 @@ Todos los roles están definidos en el enum `user_role`:
 #### POST /api/clases/reservar
 - **Autenticación**: Sí
 - **Body**: profesor_id, caballo_id, fecha, hora_inicio, hora_fin, notas (opcional)
-- **Validaciones principales** (8 puntos, en orden):
+- **Validaciones principales** (10 puntos, en orden):
   1. Usuario existe y está activo
   2. Fecha no es pasada (solo pension/media_pension)
-  3. Usuario tiene suscripción activa y vigente
-  4. Usuario tiene clases disponibles en enero plan
-  5. **[NUEVO]** Validación de acceso mensual por pagos (solo pension/media_pension) - VER SECCIÓN 5
-  6. Profesor existe y está disponible en ese horario (no tiene clase)
-  7. Caballo existe, está activo y no supera límite_clases_dia
-  8. Usuario no tiene conflicto de horario en ese día (pension/media_pension)
-  9. **[NUEVO]** Para media_pension: co-propietario no tiene clase en ese horario - VER SECCIÓN 6
+  3. **[NUEVO]** Al menos 24 horas de anticipación (solo pension/media_pension)
+  4. Usuario tiene suscripción activa y vigente
+  5. Usuario tiene clases disponibles en su plan
+  6. **[NUEVO]** Validación de acceso mensual por pagos (solo pension/media_pension) - VER SECCIÓN 5
+  7. Profesor existe y está disponible en ese horario (no tiene clase)
+  8. Caballo existe, está activo y no supera límite_clases_dia
+  9. Usuario no tiene conflicto de horario en ese día (pension/media_pension)
+  10. **[NUEVO]** Para media_pension: co-propietario no tiene clase en ese horario - VER SECCIÓN 6
 - **Respuesta**: clase creada
 
 #### POST /api/clases/reagendar/:claseId
@@ -638,6 +639,30 @@ Si rol == media_pension:
 
 ## 7. VALIDACIONES DE CLASES Y HORARIOS
 
+### Validación de Anticipación (24 horas)
+
+**Aplica a**: Solo usuarios con rol 'pension_completa' o 'media_pension'
+
+**Regla**:
+- No se puede agendar una clase si falta menos de 24 horas para el inicio de la misma
+- Se calcula: diferencia (fecha_clase + hora_inicio) - (ahora)
+- Si diferencia < 24 horas → rechazar
+
+**Error Message**:
+```json
+{
+  "valido": false,
+  "error": "Debes reservar con al menos 24 horas de anticipación."
+}
+```
+
+**Ejemplo Scenario**:
+- Hoy: 2024-01-15 a las 10:00 AM
+- Usuario intenta reservar para: 2024-01-16 a las 09:00 AM (23 horas)
+- ❌ Rechazar: menos de 24 horas
+- Usuario intenta reservar para: 2024-01-16 a las 10:01 AM (24 horas y 1 minuto)
+- ✅ Permitir: más de 24 horas
+
 ### Disponibilidad de Profesor
 
 **Verificación**: El profesor debe:
@@ -787,7 +812,35 @@ Cada mes se hace tracking de clases usadas por suscripción:
 
 ---
 
-### TC-002: Validación de Acceso Mensual - Período de Gracia (≤10)
+### TC-003: Validación de Anticipación - Menos de 24 horas
+
+**Setup**:
+- Hoy = 15 de enero a las 10:00 AM
+- Usuario 'pension_completa' intenta reservar para el 16 de enero a las 09:30 AM (23.5 horas)
+
+**Steps**:
+1. POST /api/clases/reservar para 16 de enero 09:30
+2. Validar error sobre anticipación
+
+**Expected**: 400, error: "Debes reservar con al menos 24 horas de anticipación."
+
+---
+
+### TC-004: Validación de Anticipación - Exactamente 24 horas
+
+**Setup**:
+- Hoy = 15 de enero a las 10:00 AM
+- Usuario 'pension_completa' intenta reservar para el 16 de enero a las 10:00 AM (exactamente 24 horas)
+
+**Steps**:
+1. POST /api/clases/reservar para 16 de enero 10:00
+2. Debería permitir (está en el límite)
+
+**Expected**: 201, clase creada
+
+---
+
+### TC-005: Validación de Acceso Mensual - Período de Gracia (≤10)
 
 **Setup**:
 - Hoy = 8 de enero (día actual ≤ 10)
@@ -802,7 +855,7 @@ Cada mes se hace tracking de clases usadas por suscripción:
 
 ---
 
-### TC-003: Validación de Acceso Mensual - Sin Pago Después del 10
+### TC-006: Validación de Acceso Mensual - Sin Pago Después del 10
 
 **Setup**:
 - Hoy = 12 de enero (día > 10)
@@ -817,7 +870,7 @@ Cada mes se hace tracking de clases usadas por suscripción:
 
 ---
 
-### TC-004: Validación de Acceso Mensual - Reserva Mes Siguiente con Pago
+### TC-007: Validación de Acceso Mensual - Reserva Mes Siguiente con Pago
 
 **Setup**:
 - Hoy = 12 de enero (día > 10)
@@ -832,7 +885,7 @@ Cada mes se hace tracking de clases usadas por suscripción:
 
 ---
 
-### TC-005: Caballo Compartido - Conflicto de Horario Co-propietario
+### TC-008: Caballo Compartido - Conflicto de Horario Co-propietario
 
 **Setup**:
 - Dos usuarios 'media_pension': A y B
@@ -848,7 +901,7 @@ Cada mes se hace tracking de clases usadas por suscripción:
 
 ---
 
-### TC-006: Caballo Compartido - Sin Conflicto (Horarios Consecutivos)
+### TC-009: Caballo Compartido - Sin Conflicto (Horarios Consecutivos)
 
 **Setup**:
 - Dos usuarios 'media_pension': A y B

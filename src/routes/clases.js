@@ -55,7 +55,7 @@ router.post('/reservar', async (req, res) => {
     if (!profesor_id || !caballo_id || !fecha || !hora_inicio || !hora_fin) {
       return res.status(400).json({ error: 'Faltan campos requeridos' });
     }
-
+    console.log("llegamosss")
     const resultado = await ReservaService.crearReserva(
       req.user.id,
       profesor_id,

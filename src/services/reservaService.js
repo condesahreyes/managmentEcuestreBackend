@@ -353,6 +353,7 @@ export class ReservaService {
         .select('id')
         .eq('user_id', userId)
         .eq('fecha', fecha)
+        .eq('hora_inicio', horaInicio)
         .eq('estado', 'programada');
 
       if (userClases && userClases.length > 0) {

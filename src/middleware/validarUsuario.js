@@ -11,13 +11,13 @@ export const validarUsuarioCompleto = async (req, res, next) => {
     }
 
     // Verificar si tiene caballo asignado
-    const { data: caballo } = await supabaseAdmin
+    const { data: caballo, error } = await supabaseAdmin
       .from('caballos')
       .select('id')
-      .eq('dueno_id', req.user.id)
+      .or(`dueno_id.eq.${req.user.id},dueno_id2.eq.${req.user.id}`)
       .eq('activo', true)
       .single();
-      
+
     // Verificar si tiene suscripción activa
     const { data: suscripcion } = await supabaseAdmin
       .from('suscripciones')
@@ -27,6 +27,8 @@ export const validarUsuarioCompleto = async (req, res, next) => {
       .single();
 
     if (!caballo || !suscripcion) {
+      console.log("holaaa")
+      console.log({caballo, suscripcion})
       return res.status(403).json({
         error: 'PENDIENTE_APROBACION',
         mensaje: 'Tu cuenta está pendiente de aprobación. El administrador debe asignarte un caballo y una suscripción para poder usar la aplicación.',
